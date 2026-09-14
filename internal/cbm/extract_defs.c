@@ -4703,6 +4703,19 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
 
 // Find the body/members node inside a class node
 static TSNode find_class_body(TSNode class_node, CBMLanguage lang) {
+    /* Structured Text must be answered BEFORE the generic field-name probe
+     * below. A FUNCTION_BLOCK / PROGRAM / INTERFACE keeps its METHOD, PROPERTY
+     * and VAR members as DIRECT children, but the ST grammar also tags a
+     * trailing body statement with the field name "body". The probe would grab
+     * that single statement and return it as if it were the member container,
+     * so every member of a block that ends in a statement was silently lost
+     * (measured: FB_WithTrail lost both its method and its property, while the
+     * identical FB_NoTrail kept them). Iterate the declaration itself, as
+     * ObjC/Squirrel/Smali do below - those simply never expose a "body" field,
+     * which is why answering them after the probe is harmless. */
+    if (lang == CBM_LANG_ST) {
+        return class_node;
+    }
     // Try field names first
     static const char *body_fields[] = {"body", "members", "class_body", "declaration_list", NULL};
     for (const char **f = body_fields; *f; f++) {
@@ -4731,13 +4744,6 @@ static TSNode find_class_body(TSNode class_node, CBMLanguage lang) {
     // Smali: field_definition nodes are direct children of class_definition (no
     // dedicated body node) — iterate the class node itself.
     if (lang == CBM_LANG_SMALI) {
-        return class_node;
-    }
-    // Structured Text: a FUNCTION_BLOCK / PROGRAM / INTERFACE carries its
-    // METHOD, PROPERTY and VAR members as DIRECT children - there is no body
-    // node, and "body" is not a field on these declarations. Iterate the
-    // declaration itself, as ObjC/Squirrel/Smali above do for the same reason.
-    if (lang == CBM_LANG_ST) {
         return class_node;
     }
     // GraphQL: object/interface fields live in a fields_definition child.
