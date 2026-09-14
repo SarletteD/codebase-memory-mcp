@@ -2709,6 +2709,43 @@ static const char **extract_base_classes(CBMArena *a, TSNode node, const char *s
             }
         }
     }
+    /* IEC 61131-3 ST: `FUNCTION_BLOCK A EXTENDS B IMPLEMENTS I1, I2` and
+     * `INTERFACE I EXTENDS J, K` tag EVERY base name with a repeated `extends` /
+     * `implements` field (the separating ',' tokens carry the field too), so the
+     * first-match field probe below would keep only one base. Collect every named
+     * child in either field — identifier or qualified_identifier. Whether an edge
+     * becomes IMPLEMENTS or INHERITS is decided later from the target's label. */
+    if (lang == CBM_LANG_ST) {
+        const char *pbases[MAX_BASES];
+        int pc = 0;
+        uint32_t nc = ts_node_child_count(node);
+        for (uint32_t i = 0; i < nc && pc < MAX_BASES_MINUS_1; i++) {
+            const char *fn = ts_node_field_name_for_child(node, i);
+            if (!fn || (strcmp(fn, "extends") != 0 && strcmp(fn, "implements") != 0)) {
+                continue;
+            }
+            TSNode bn_node = ts_node_child(node, i);
+            if (!ts_node_is_named(bn_node)) {
+                continue;
+            }
+            char *bn = cbm_node_text(a, bn_node, source);
+            if (bn && bn[0]) {
+                pbases[pc++] = bn;
+            }
+        }
+        if (pc > 0) {
+            const char **result =
+                (const char **)cbm_arena_alloc(a, (pc + NULL_TERM) * sizeof(const char *));
+            if (result) {
+                for (int i = 0; i < pc; i++) {
+                    result[i] = pbases[i];
+                }
+                result[pc] = NULL;
+                return result;
+            }
+        }
+        return NULL;
+    }
     /* Pascal: declClass carries one or more `parent` fields, each a `typeref`
      * (`= class(TBase, IFoo)`). Collect all parent typeref identifiers. */
     if (lang == CBM_LANG_PASCAL && strcmp(ts_node_type(node), "declClass") == 0) {

@@ -7245,6 +7245,58 @@ TEST(st_declared_names_bind_while_types_and_initializers_stay_usages) {
     PASS();
 }
 
+static const CBMDefinition *st_def(CBMFileResult *r, const char *name) {
+    for (int i = 0; i < r->defs.count; i++) {
+        if (r->defs.items[i].name && strcmp(r->defs.items[i].name, name) == 0)
+            return &r->defs.items[i];
+    }
+    return NULL;
+}
+
+static int st_has_base(const CBMDefinition *d, const char *base) {
+    for (int i = 0; d && d->base_classes && d->base_classes[i]; i++) {
+        if (strcmp(d->base_classes[i], base) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static int st_base_count(const CBMDefinition *d) {
+    int n = 0;
+    while (d && d->base_classes && d->base_classes[n])
+        n++;
+    return n;
+}
+
+/* ST tags every base with a REPEATED `extends`/`implements` field, so a
+ * first-match field probe kept at most one base and the graph had no
+ * INHERITS/IMPLEMENTS edge at all. Every base must be collected. */
+TEST(st_extends_and_implements_collect_every_base) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_A EXTENDS FB_Base IMPLEMENTS I_One, I_Two\n"
+                               "END_FUNCTION_BLOCK\n"
+                               "FUNCTION_BLOCK FB_B IMPLEMENTS Lib.I_Three\n"
+                               "END_FUNCTION_BLOCK\n"
+                               "INTERFACE I_X EXTENDS I_One, I_Two\n"
+                               "END_INTERFACE\n",
+                               CBM_LANG_ST, "t", "Bases.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *a = st_def(r, "FB_A");
+    const CBMDefinition *b = st_def(r, "FB_B");
+    const CBMDefinition *x = st_def(r, "I_X");
+    ASSERT_EQ(st_base_count(a), 3);
+    ASSERT(st_has_base(a, "FB_Base"));
+    ASSERT(st_has_base(a, "I_One"));
+    ASSERT(st_has_base(a, "I_Two"));
+    ASSERT_EQ(st_base_count(b), 1);
+    ASSERT(st_has_base(b, "Lib.I_Three"));
+    ASSERT_EQ(st_base_count(x), 2);
+    ASSERT(st_has_base(x, "I_One"));
+    ASSERT(st_has_base(x, "I_Two"));
+    cbm_free_result(r);
+    PASS();
+}
+
 /* ── TwinCAT object XML (transcoded to Structured Text) ──────────────────── */
 
 static const CBMDefinition *twincat_def(CBMFileResult *r, const char *label, const char *name) {
@@ -7461,6 +7513,7 @@ SUITE(extraction) {
     RUN_TEST(st_interface_members_extracted);
     RUN_TEST(st_type_alias_keeps_its_name);
     RUN_TEST(st_declared_names_bind_while_types_and_initializers_stay_usages);
+    RUN_TEST(st_extends_and_implements_collect_every_base);
 
     /* TwinCAT object XML */
     RUN_TEST(twincat_pou_reassembled_and_lines_mapped_to_xml);
