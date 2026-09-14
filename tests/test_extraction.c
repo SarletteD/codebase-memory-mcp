@@ -7120,9 +7120,103 @@ TEST(non_config_language_module_has_no_promoted_description_issue519) {
     PASS();
 }
 
+/* ── IEC 61131-3 Structured Text ─────────────────────────────────────────── */
+
+/* A FUNCTION_BLOCK is class-like: it owns its METHOD and PROPERTY members. */
+TEST(st_function_block_is_class_with_members) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_Motor\n"
+                               "VAR\n"
+                               "  _running : BOOL;\n"
+                               "END_VAR\n"
+                               "METHOD PUBLIC Start : BOOL\n"
+                               "Start := TRUE;\n"
+                               "END_METHOD\n"
+                               "PROPERTY PUBLIC Running : BOOL\n"
+                               "GET\n"
+                               "Running := _running;\n"
+                               "END_GET\n"
+                               "END_PROPERTY\n"
+                               "END_FUNCTION_BLOCK\n",
+                               CBM_LANG_ST, "t", "Motor.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Class", "FB_Motor"));
+    ASSERT(has_def(r, "Method", "Start"));
+    ASSERT(has_def(r, "Field", "Running"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* Regression: the ST grammar tags a TRAILING body statement with the field name
+ * "body". find_class_body() probes that field name before any language case, so
+ * it used to return the lone statement as the member container and every member
+ * of such a block was silently dropped. Members must survive the statement. */
+TEST(st_members_survive_trailing_body_statement) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_Motor\n"
+                               "VAR\n"
+                               "  _running : BOOL;\n"
+                               "END_VAR\n"
+                               "METHOD PUBLIC Start : BOOL\n"
+                               "Start := TRUE;\n"
+                               "END_METHOD\n"
+                               "PROPERTY PUBLIC Running : BOOL\n"
+                               "GET\n"
+                               "Running := _running;\n"
+                               "END_GET\n"
+                               "END_PROPERTY\n"
+                               "_running := TRUE;\n"
+                               "END_FUNCTION_BLOCK\n",
+                               CBM_LANG_ST, "t", "Motor.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Class", "FB_Motor"));
+    ASSERT(has_def(r, "Method", "Start"));
+    ASSERT(has_def(r, "Field", "Running"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* An INTERFACE holds method_signature nodes, not method_declaration ones. */
+TEST(st_interface_members_extracted) {
+    CBMFileResult *r = extract("INTERFACE I_Motor\n"
+                               "METHOD Start : BOOL\n"
+                               "END_METHOD\n"
+                               "METHOD Stop : BOOL\n"
+                               "END_METHOD\n"
+                               "END_INTERFACE\n",
+                               CBM_LANG_ST, "t", "I_Motor.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Interface", "I_Motor"));
+    ASSERT(has_def(r, "Method", "Start"));
+    ASSERT(has_def(r, "Method", "Stop"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* "TYPE T_X : INT; END_TYPE" parses as a NAMELESS type_declaration wrapping a
+ * type_definition that carries the name, which is why type_definition and not
+ * type_declaration is registered. */
+TEST(st_type_alias_keeps_its_name) {
+    CBMFileResult *r =
+        extract("TYPE T_MotorConfig :\nSTRUCT\n  MaxSpeed : INT;\nEND_STRUCT;\nEND_TYPE\n",
+                CBM_LANG_ST, "t", "Types.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def_any(r, "T_MotorConfig"));
+    cbm_free_result(r);
+    PASS();
+}
+
 SUITE(extraction) {
     /* Initialize extraction library */
     cbm_init();
+
+    /* IEC 61131-3 Structured Text */
+    RUN_TEST(st_function_block_is_class_with_members);
+    RUN_TEST(st_members_survive_trailing_body_statement);
+    RUN_TEST(st_interface_members_extracted);
+    RUN_TEST(st_type_alias_keeps_its_name);
 
     /* Wide-flat-file linearity (ms-typescript hang) */
     RUN_TEST(extract_wide_flat_file_is_linear);
