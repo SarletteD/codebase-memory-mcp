@@ -506,6 +506,14 @@ static const CBMOccurrenceSpec occurrence_specs[CBM_LANG_COUNT] = {
                                    CBM_OCCURRENCE_STANDARD, true},
     [CBM_LANG_OBJECTSCRIPT_ROUTINE] = {objectscript_binding_nodes, objectscript_write_nodes,
                                        CBM_OCCURRENCE_STANDARD, true},
+    /* IEC 61131-3 ST: every VAR/VAR_INPUT/VAR_OUTPUT/VAR_IN_OUT/VAR_TEMP entry is a
+     * variable_declaration whose names sit in the plural `names` field, which
+     * binding_fields does not list — so without this row a declared name was
+     * emitted as a usage. All VAR sections precede the body and are visible for
+     * the whole POU, so parameter-like whole-scope binding is the ST semantics.
+     * The `type` field and (see is_binding_occurrence) `initial_value` stay reads. */
+    [CBM_LANG_ST] = {(const char *const[]){"variable_declaration", NULL}, NULL,
+                     CBM_OCCURRENCE_STANDARD, false},
 };
 
 static bool text_equals(CBMExtractCtx *ctx, TSNode node, const char *expected) {
@@ -1141,6 +1149,12 @@ static bool is_binding_occurrence(CBMExtractCtx *ctx, TSNode node, const CBMLang
          * The emitted occurrence remains an ordinary USAGE, never a callable
          * reference merely because the target happens to be a type. */
         if (field && strcmp(field, "type") == 0) {
+            return false;
+        }
+        /* ST names a declaration's initializer `initial_value` ("f : INT := g;").
+         * It is a read like any value field, but is_value_field stays generic:
+         * Pine exposes a field of the same name with its own occurrence policy. */
+        if (ctx->language == CBM_LANG_ST && field && strcmp(field, "initial_value") == 0) {
             return false;
         }
 

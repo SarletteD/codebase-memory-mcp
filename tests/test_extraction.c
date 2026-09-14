@@ -7208,6 +7208,42 @@ TEST(st_type_alias_keeps_its_name) {
     PASS();
 }
 
+static int st_usage_count(const CBMFileResult *r, const char *name) {
+    int count = 0;
+    for (int i = 0; i < r->usages.count; i++) {
+        if (r->usages.items[i].ref_name && strcmp(r->usages.items[i].ref_name, name) == 0)
+            count++;
+    }
+    return count;
+}
+
+/* ST keeps declared names in the plural `names` field, which the generic
+ * binding rules did not list, so every declaration used to be emitted as a
+ * usage too — inflating in-degree. Declared names bind; a declaration's type
+ * and its initializer are still reads. */
+TEST(st_declared_names_bind_while_types_and_initializers_stay_usages) {
+    CBMFileResult *r = extract("FUNCTION run : INT\n"
+                               "VAR_INPUT\n"
+                               "  watched : INT;\n"
+                               "END_VAR\n"
+                               "VAR\n"
+                               "  cfg : T_Config;\n"
+                               "  f : INT := seed;\n"
+                               "END_VAR\n"
+                               "run := watched + f;\n"
+                               "END_FUNCTION\n",
+                               CBM_LANG_ST, "t", "Run.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT_EQ(st_usage_count(r, "watched"), 1);
+    ASSERT_EQ(st_usage_count(r, "f"), 1);
+    ASSERT_EQ(st_usage_count(r, "cfg"), 0);
+    ASSERT_EQ(st_usage_count(r, "T_Config"), 1);
+    ASSERT_EQ(st_usage_count(r, "seed"), 1);
+    cbm_free_result(r);
+    PASS();
+}
+
 SUITE(extraction) {
     /* Initialize extraction library */
     cbm_init();
@@ -7217,6 +7253,7 @@ SUITE(extraction) {
     RUN_TEST(st_members_survive_trailing_body_statement);
     RUN_TEST(st_interface_members_extracted);
     RUN_TEST(st_type_alias_keeps_its_name);
+    RUN_TEST(st_declared_names_bind_while_types_and_initializers_stay_usages);
 
     /* Wide-flat-file linearity (ms-typescript hang) */
     RUN_TEST(extract_wide_flat_file_is_linear);
