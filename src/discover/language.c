@@ -616,6 +616,12 @@ static const ext_entry_t EXT_TABLE[] = {
     /* Structured Text */
     {".st", CBM_LANG_ST},
 
+    /* TwinCAT PLC objects (XML, transcoded to Structured Text) */
+    {".TcPOU", CBM_LANG_TWINCAT},
+    {".TcDUT", CBM_LANG_TWINCAT},
+    {".TcGVL", CBM_LANG_TWINCAT},
+    {".TcIO", CBM_LANG_TWINCAT},
+
     /* Starlark */
     {".star", CBM_LANG_STARLARK},
 
@@ -895,6 +901,7 @@ static const char *LANG_NAMES[CBM_LANG_COUNT] = {
     [CBM_LANG_ARKTS] = "ArkTS",
     [CBM_LANG_PLSQL] = "PL/SQL",
     [CBM_LANG_ST] = "Structured Text",
+    [CBM_LANG_TWINCAT] = "TwinCAT",
 
 };
 

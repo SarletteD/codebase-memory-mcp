@@ -13,6 +13,7 @@
 #include <time.h>
 #include "macro_table.h"
 #include "iris_export_xml.h"
+#include "twincat_xml.h"
 
 /* ── Helpers ───────────────────────────────────────────────────── */
 
@@ -7244,6 +7245,212 @@ TEST(st_declared_names_bind_while_types_and_initializers_stay_usages) {
     PASS();
 }
 
+/* ── TwinCAT object XML (transcoded to Structured Text) ──────────────────── */
+
+static const CBMDefinition *twincat_def(CBMFileResult *r, const char *label, const char *name) {
+    for (int i = 0; i < r->defs.count; i++) {
+        if (strcmp(r->defs.items[i].label, label) == 0 && strcmp(r->defs.items[i].name, name) == 0)
+            return &r->defs.items[i];
+    }
+    return NULL;
+}
+
+/* A .TcPOU splits one FUNCTION_BLOCK across sibling elements, with the body
+ * BEFORE the members in the XML. It must be reassembled with the members first,
+ * normalized (pragma, POU access modifier, constructor arguments), parse clean,
+ * and report every definition at its line in the XML file — not in the
+ * generated ST. Line numbers below are the literal's own. */
+TEST(twincat_pou_reassembled_and_lines_mapped_to_xml) {
+    static const char XML[] =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"                                  /* 1 */
+        "<TcPlcObject Version=\"1.1.0.1\">\n"                                           /* 2 */
+        "  <POU Name=\"FB_Motor\" Id=\"{1}\" SpecialFunc=\"None\">\n"                   /* 3 */
+        "    <Declaration><![CDATA[{attribute 'reflection'}\n"                          /* 4 */
+        "FUNCTION_BLOCK PUBLIC FB_Motor EXTENDS FB_Base\n"                              /* 5 */
+        "VAR\n"                                                                         /* 6 */
+        "  _running : BOOL;\n"                                                          /* 7 */
+        "  _timer : FB_Timer(tDelay := T#1S);\n"                                        /* 8 */
+        "END_VAR\n"                                                                     /* 9 */
+        "]]></Declaration>\n"                                                           /* 10 */
+        "    <Implementation>\n"                                                        /* 11 */
+        "      <ST><![CDATA[_running := Start();]]></ST>\n"                             /* 12 */
+        "    </Implementation>\n"                                                       /* 13 */
+        "    <Method Name=\"Start\" Id=\"{2}\">\n"                                      /* 14 */
+        "      <Declaration><![CDATA[METHOD PUBLIC Start : BOOL\n"                      /* 15 */
+        "]]></Declaration>\n"                                                           /* 16 */
+        "      <Implementation>\n"                                                      /* 17 */
+        "        <ST><![CDATA[Start := TRUE;]]></ST>\n"                                 /* 18 */
+        "      </Implementation>\n"                                                     /* 19 */
+        "    </Method>\n"                                                               /* 20 */
+        "    <Property Name=\"Running\" Id=\"{3}\">\n"                                  /* 21 */
+        "      <Declaration><![CDATA[PROPERTY PUBLIC Running : BOOL]]></Declaration>\n" /* 22 */
+        "      <Get Name=\"Get\" Id=\"{4}\">\n"                                         /* 23 */
+        "        <Declaration><![CDATA[PUBLIC\n"                                        /* 24 */
+        "VAR\n"                                                                         /* 25 */
+        "END_VAR\n"                                                                     /* 26 */
+        "]]></Declaration>\n"                                                           /* 27 */
+        "        <Implementation>\n"                                                    /* 28 */
+        "          <ST><![CDATA[Running := _running;]]></ST>\n"                         /* 29 */
+        "        </Implementation>\n"                                                   /* 30 */
+        "      </Get>\n"                                                                /* 31 */
+        "    </Property>\n"                                                             /* 32 */
+        "  </POU>\n"                                                                    /* 33 */
+        "</TcPlcObject>\n";                                                             /* 34 */
+    CBMFileResult *r = extract(XML, CBM_LANG_TWINCAT, "t", "FB_Motor.TcPOU");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT_FALSE(r->parse_incomplete);
+
+    const CBMDefinition *fb = twincat_def(r, "Class", "FB_Motor");
+    const CBMDefinition *start = twincat_def(r, "Method", "Start");
+    const CBMDefinition *running = twincat_def(r, "Field", "Running");
+    ASSERT_NOT_NULL(fb);
+    ASSERT_NOT_NULL(start);
+    ASSERT_NOT_NULL(running);
+    ASSERT_EQ((int)fb->start_line, 5);
+    ASSERT_EQ((int)fb->end_line, 33);
+    ASSERT_EQ((int)start->start_line, 15);
+    ASSERT_EQ((int)start->end_line, 20);
+    ASSERT_EQ((int)running->start_line, 22);
+    ASSERT_EQ((int)running->end_line, 32);
+
+    bool call_seen = false;
+    for (int i = 0; i < r->calls.count; i++) {
+        const CBMCall *c = &r->calls.items[i];
+        if (c->callee_name && strcmp(c->callee_name, "Start") == 0) {
+            call_seen = true;
+            ASSERT_EQ(c->start_line, 12);
+        }
+    }
+    ASSERT(call_seen);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A .TcIO interface: method signatures and a property whose accessor carries
+ * only an empty declaration. */
+TEST(twincat_interface_members_extracted) {
+    static const char XML[] =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        "<TcPlcObject Version=\"1.1.0.1\">\n"
+        "  <Itf Name=\"I_Motor\" Id=\"{1}\">\n"
+        "    <Declaration><![CDATA[INTERFACE I_Motor\n"
+        "]]></Declaration>\n"
+        "    <Method Name=\"Start\" Id=\"{2}\">\n"
+        "      <Declaration><![CDATA[METHOD Start : BOOL\n"
+        "]]></Declaration>\n"
+        "    </Method>\n"
+        "    <Property Name=\"Running\" Id=\"{3}\">\n"
+        "      <Declaration><![CDATA[PROPERTY Running : BOOL]]></Declaration>\n"
+        "      <Get Name=\"Get\" Id=\"{4}\">\n"
+        "        <Declaration><![CDATA[]]></Declaration>\n"
+        "      </Get>\n"
+        "    </Property>\n"
+        "  </Itf>\n"
+        "</TcPlcObject>\n";
+    CBMFileResult *r = extract(XML, CBM_LANG_TWINCAT, "t", "I_Motor.TcIO");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT(has_def(r, "Interface", "I_Motor"));
+    ASSERT(has_def(r, "Method", "Start"));
+    ASSERT(has_def(r, "Field", "Running"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* .TcDUT declarations in the TwinCAT dialect the grammar excludes: an enum base
+ * type, END_STRUCT without ';', TYPE ... EXTENDS, STRING[n], REFERENCE TO. */
+TEST(twincat_dut_dialect_normalized) {
+    static const char ENUM_XML[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                                   "<TcPlcObject Version=\"1.1.0.1\">\n"
+                                   "  <DUT Name=\"E_State\" Id=\"{1}\">\n"
+                                   "    <Declaration><![CDATA[{attribute 'qualified_only'}\n"
+                                   "TYPE E_State :\n"
+                                   "(\n"
+                                   "\tIdle := 0,\n"
+                                   "\tRunning\n"
+                                   ") UINT;\n"
+                                   "END_TYPE\n"
+                                   "]]></Declaration>\n"
+                                   "  </DUT>\n"
+                                   "</TcPlcObject>\n";
+    static const char STRUCT_XML[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                                     "<TcPlcObject Version=\"1.1.0.1\">\n"
+                                     "  <DUT Name=\"T_Config\" Id=\"{1}\">\n"
+                                     "    <Declaration><![CDATA[TYPE T_Config EXTENDS T_Base :\n"
+                                     "STRUCT\n"
+                                     "\tName : STRING[80];\n"
+                                     "\tAxis : REFERENCE TO INT;\n"
+                                     "END_STRUCT\n"
+                                     "END_TYPE\n"
+                                     "]]></Declaration>\n"
+                                     "  </DUT>\n"
+                                     "</TcPlcObject>\n";
+    CBMFileResult *r = extract(ENUM_XML, CBM_LANG_TWINCAT, "t", "E_State.TcDUT");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT(has_def_any(r, "E_State"));
+    cbm_free_result(r);
+
+    r = extract(STRUCT_XML, CBM_LANG_TWINCAT, "t", "T_Config.TcDUT");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT(has_def_any(r, "T_Config"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* The normalization keeps every newline (the line map depends on it), drops a
+ * pragma line but never one carrying a comment delimiter, and rewrites
+ * declarations only inside VAR ... END_VAR: the same "Name: Call(x);" shape as
+ * a constructor argument must survive as a CASE arm. */
+TEST(twincat_normalize_preserves_lines_and_scopes_declaration_rewrites) {
+    static const char SRC[] = "{attribute 'x'}\n"
+                              "{*) live (*}\n"
+                              "VAR\n"
+                              "  fb : FB_T(a := 1,\n"
+                              "            b := (2));\n"
+                              "  arr : ARRAY[0..1] OF INT := [\n"
+                              "    1, 2];\n"
+                              "END_VAR\n"
+                              "CASE x OF\n"
+                              "NamedValue: Foo(x);\n"
+                              "END_CASE\n";
+    int len = 0;
+    char *out = cbm_twincat_normalize(SRC, (int)strlen(SRC), &len);
+    ASSERT_NOT_NULL(out);
+    int nl_in = 0;
+    int nl_out = 0;
+    for (const char *p = SRC; *p; p++)
+        nl_in += *p == '\n';
+    for (const char *p = out; *p; p++)
+        nl_out += *p == '\n';
+    ASSERT_EQ(nl_out, nl_in);
+    ASSERT_EQ(len, (int)strlen(out));
+    ASSERT(strstr(out, "attribute") == NULL);
+    ASSERT(strstr(out, "{*) live (*}") != NULL);
+    ASSERT(strstr(out, "fb : FB_T;") != NULL);
+    ASSERT(strstr(out, ":= [") == NULL);
+    ASSERT(strstr(out, "NamedValue: Foo(x);") != NULL);
+    free(out);
+    PASS();
+}
+
+/* A TwinCAT file without a POU/DUT/GVL/Itf object is not an error: it extracts
+ * as empty Structured Text. */
+TEST(twincat_file_without_object_is_empty_not_error) {
+    CBMFileResult *r = extract("<?xml version=\"1.0\"?>\n<TcPlcObject><Folder/></TcPlcObject>\n",
+                               CBM_LANG_TWINCAT, "t", "Empty.TcPOU");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    for (int i = 0; i < r->defs.count; i++) {
+        ASSERT(strcmp(r->defs.items[i].label, "Module") == 0);
+    }
+    cbm_free_result(r);
+    PASS();
+}
+
 SUITE(extraction) {
     /* Initialize extraction library */
     cbm_init();
@@ -7254,6 +7461,13 @@ SUITE(extraction) {
     RUN_TEST(st_interface_members_extracted);
     RUN_TEST(st_type_alias_keeps_its_name);
     RUN_TEST(st_declared_names_bind_while_types_and_initializers_stay_usages);
+
+    /* TwinCAT object XML */
+    RUN_TEST(twincat_pou_reassembled_and_lines_mapped_to_xml);
+    RUN_TEST(twincat_interface_members_extracted);
+    RUN_TEST(twincat_dut_dialect_normalized);
+    RUN_TEST(twincat_normalize_preserves_lines_and_scopes_declaration_rewrites);
+    RUN_TEST(twincat_file_without_object_is_empty_not_error);
 
     /* Wide-flat-file linearity (ms-typescript hang) */
     RUN_TEST(extract_wide_flat_file_is_linear);

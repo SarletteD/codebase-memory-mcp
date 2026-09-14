@@ -206,7 +206,7 @@ static const char *st_call_types[] = {"call_expression", "invocation_statement",
 // file DECLARING a namespace, which is the opposite of an import - registering it
 // produced an import edge pointing at the file's own namespace.
 static const char *st_import_types[] = {"using_directive", NULL};
-static const char *st_branch_types[] = {"if_statement", "case_statement", "for_statement",
+static const char *st_branch_types[] = {"if_statement",    "case_statement",   "for_statement",
                                         "while_statement", "repeat_statement", NULL};
 static const char *st_var_types[] = {"variable_declaration", NULL};
 static const char *st_assign_types[] = {"assignment_statement", "reference_assignment_statement",
@@ -2231,6 +2231,11 @@ static const CBMLangSpec lang_specs[CBM_LANG_COUNT] = {
                      st_call_types, st_import_types, empty_types, st_branch_types, st_var_types,
                      st_assign_types, empty_types, NULL, empty_types, NULL, NULL,
                      tree_sitter_iec61131_3_st, NULL},
+
+    // CBM_LANG_TWINCAT — TwinCAT object XML. No grammar row: cbm_extract_file_ex
+    // transcodes it to Structured Text (twincat_xml.c) and extracts it as
+    // CBM_LANG_ST, so this language never reaches cbm_lang_spec()/
+    // cbm_ts_language() directly. Left as a zero spec.
 
     // CBM_LANG_FENNEL
     [CBM_LANG_FENNEL] = {CBM_LANG_FENNEL, fennel_func_types, empty_types, empty_types,

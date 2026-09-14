@@ -18,6 +18,7 @@
 #include "lsp/kotlin_lsp.h"
 #include "lsp/rust_lsp.h"
 #include "preprocessor.h"
+#include "twincat_xml.h" // cbm_twincat_to_st — TwinCAT object XML transcoded to Structured Text
 #include "foundation/compat.h"
 #include "foundation/compat_fs.h"  // cbm_fopen — crash-supervisor per-file marker write
 #include "foundation/hash_table.h" // CBMHashTable — crash-supervisor quarantine set
@@ -28,6 +29,7 @@
 #include "sqlite3.h" // sqlite3_mem_methods, sqlite3_config, SQLITE_CONFIG_MALLOC — bind sqlite to mimalloc
 #endif
 #include <stdint.h> // uint32_t, uint64_t, int64_t
+#include <stdio.h>  // sscanf — TwinCAT error-range remap
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -2162,17 +2164,97 @@ static CBMFileResult *extract_file_ex_body(const char *source, int source_len, C
  * is what keeps that to one create and one destroy. If the arena cannot be
  * created, the body is handed NULL and the traversal stacks fall back to the
  * result arena, which is what shipped before #1997. */
+/* Move a TwinCAT result from generated-ST lines back to lines of the XML file.
+ * Definitions and calls carry lines; error_ranges is re-rendered. Byte offsets
+ * stay buffer-relative, which is all their consumer (same-buffer LSP matching)
+ * relies on, and ST has no LSP. */
+static void twincat_remap_lines(CBMFileResult *r, const CBMTwinCATUnit *u) {
+    for (int i = 0; i < r->defs.count; i++) {
+        CBMDefinition *d = &r->defs.items[i];
+        if (d->label && strcmp(d->label, "Module") == 0) {
+            d->start_line = 1;
+            d->end_line = u->xml_lines > 0 ? u->xml_lines : 1;
+            continue;
+        }
+        uint32_t s = cbm_twincat_xml_line(u, d->start_line);
+        uint32_t e = cbm_twincat_xml_line(u, d->end_line);
+        d->start_line = s <= e ? s : e;
+        d->end_line = s <= e ? e : s;
+    }
+    for (int i = 0; i < r->calls.count; i++) {
+        CBMCall *c = &r->calls.items[i];
+        if (c->start_line > 0) {
+            c->start_line = (int)cbm_twincat_xml_line(u, (uint32_t)c->start_line);
+        }
+    }
+    if (r->error_ranges && r->error_ranges[0]) {
+        const char *p = r->error_ranges;
+        const char *out = "";
+        while (*p) {
+            const char *sep = strchr(p, ',');
+            size_t len = sep ? (size_t)(sep - p) : strlen(p);
+            unsigned a = 0;
+            unsigned b = 0;
+            const char *piece = NULL;
+            if (p[0] != '+' && sscanf(p, "%u-%u", &a, &b) == 2) {
+                uint32_t ma = cbm_twincat_xml_line(u, a);
+                uint32_t mb = cbm_twincat_xml_line(u, b);
+                piece =
+                    cbm_arena_sprintf(&r->arena, "%u-%u", ma <= mb ? ma : mb, ma <= mb ? mb : ma);
+            } else {
+                piece = cbm_arena_strndup(&r->arena, p, len);
+            }
+            out =
+                cbm_arena_sprintf(&r->arena, "%s%s%s", out, out[0] ? "," : "", piece ? piece : "");
+            if (!out) {
+                break;
+            }
+            p = sep ? sep + 1 : p + len;
+        }
+        if (out) {
+            r->error_ranges = out;
+        }
+    }
+}
+
 CBMFileResult *cbm_extract_file_ex(const char *source, int source_len, CBMLanguage language,
                                    const char *project, const char *rel_path,
                                    int64_t timeout_micros, const char **extra_defines,
                                    const char **include_paths, const CBMMacroTable *macro_table,
                                    const CBMReturnTypeTable *return_type_table) {
+    /* TwinCAT object XML has no grammar: reassemble + normalize it into
+     * Structured Text here, so every caller — the extract passes and the
+     * cache-miss re-extracts in calls/usages/semantic alike — gets the same
+     * result without a pipeline special case. A file that holds no
+     * recognizable object is extracted as empty ST (Module only). */
+    CBMTwinCATUnit twincat = {0};
+    bool is_twincat = language == CBM_LANG_TWINCAT;
+    if (is_twincat) {
+        if (cbm_twincat_to_st(source, source_len, &twincat)) {
+            source = twincat.text;
+            source_len = twincat.len;
+        } else {
+            source = "";
+            source_len = 0;
+        }
+        language = CBM_LANG_ST;
+    }
     CBMArena scratch;
     cbm_arena_init_sized(&scratch, CBM_EXTRACT_SCRATCH_BLOCK);
     CBMFileResult *result = extract_file_ex_body(
         source, source_len, language, project, rel_path, timeout_micros, extra_defines,
         include_paths, macro_table, return_type_table, scratch.nblocks > 0 ? &scratch : NULL);
     cbm_arena_destroy(&scratch);
+    if (is_twincat) {
+        if (result) {
+            if (twincat.text) {
+                twincat_remap_lines(result, &twincat);
+            }
+            /* The tree indexes the transient ST buffer freed below. */
+            cbm_free_tree(result);
+        }
+        cbm_twincat_unit_free(&twincat);
+    }
     return result;
 }
 

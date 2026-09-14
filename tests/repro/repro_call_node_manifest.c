@@ -551,7 +551,8 @@ TEST(repro_call_node_manifest_live_specs_contain_only_expected_primary_entries) 
 
         /* The registry reproduction owns Nim's stale enum and Studio Export's
          * transform-only, intentionally grammar-free classification. */
-        if (language == CBM_LANG_NIM || language == CBM_LANG_OBJECTSCRIPT_EXPORT) {
+        if (language == CBM_LANG_NIM || language == CBM_LANG_OBJECTSCRIPT_EXPORT ||
+            language == CBM_LANG_TWINCAT) {
             continue;
         }
         if (!spec || spec->language != language) {

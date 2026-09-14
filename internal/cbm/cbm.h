@@ -177,7 +177,10 @@ typedef enum {
     CBM_LANG_ARKTS,    // ArkTS (HarmonyOS/OpenHarmony .ets — TypeScript superset + ArkUI)
     CBM_LANG_PLSQL,    // Oracle PL/SQL
     CBM_LANG_CHIALISP, // Chialisp (.clsp/.clib/.clinc — Chia smart-coin s-expression language)
-    CBM_LANG_ST, // IEC 61131-3 Structured Text (.st). TwinCAT .TcPOU/.TcDUT XML is wired separately.
+    CBM_LANG_ST,       // IEC 61131-3 Structured Text (.st). TwinCAT .TcPOU/.TcDUT XML is wired
+                       // separately.
+    CBM_LANG_TWINCAT,  // Beckhoff TwinCAT object XML (.TcPOU/.TcDUT/.TcGVL/.TcIO) — no grammar of
+                       // its own: cbm_extract_file_ex transcodes it to CBM_LANG_ST (twincat_xml.c)
     CBM_LANG_COUNT
 } CBMLanguage;
 

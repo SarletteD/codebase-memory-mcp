@@ -1032,7 +1032,8 @@ static const RoutineArgumentCase CHIALISP_CASE = ROUTINE_ARGUMENT_CASE(
     "accept", "watched", 1, 1, 0, "Chialisp list application and symbol-reference vocabulary");
 
 /* IEC 61131-3 Structured Text: a FUNCTION yields its result by assigning to its
- * own name. */
+ * own name. TwinCAT object XML is absent on purpose, like Studio Export: it is
+ * a transform-only input transcoded to ST before grammar extraction. */
 static const char ST_INSIDE[] = "FUNCTION accept : INT\n"
                                 "VAR_INPUT\n"
                                 "  value : INT;\n"
