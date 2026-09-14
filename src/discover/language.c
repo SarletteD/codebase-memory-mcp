@@ -613,6 +613,9 @@ static const ext_entry_t EXT_TABLE[] = {
     /* Scheme */
     {".ss", CBM_LANG_SCHEME},
 
+    /* Structured Text */
+    {".st", CBM_LANG_ST},
+
     /* Starlark */
     {".star", CBM_LANG_STARLARK},
 
@@ -891,6 +894,7 @@ static const char *LANG_NAMES[CBM_LANG_COUNT] = {
     [CBM_LANG_OBJECTSCRIPT_EXPORT] = "ObjectScript Export XML",
     [CBM_LANG_ARKTS] = "ArkTS",
     [CBM_LANG_PLSQL] = "PL/SQL",
+    [CBM_LANG_ST] = "Structured Text",
 
 };
 

@@ -4733,6 +4733,13 @@ static TSNode find_class_body(TSNode class_node, CBMLanguage lang) {
     if (lang == CBM_LANG_SMALI) {
         return class_node;
     }
+    // Structured Text: a FUNCTION_BLOCK / PROGRAM / INTERFACE carries its
+    // METHOD, PROPERTY and VAR members as DIRECT children - there is no body
+    // node, and "body" is not a field on these declarations. Iterate the
+    // declaration itself, as ObjC/Squirrel/Smali above do for the same reason.
+    if (lang == CBM_LANG_ST) {
+        return class_node;
+    }
     // GraphQL: object/interface fields live in a fields_definition child.
     if (lang == CBM_LANG_GRAPHQL) {
         TSNode b = cbm_find_child_by_kind(class_node, "fields_definition");
