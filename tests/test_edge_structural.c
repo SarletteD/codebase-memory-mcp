@@ -629,6 +629,224 @@ TEST(es_inherits_crossfile_kotlin_red) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
+ * TwinCAT: namespace-qualified bases resolve inside their library
+ *
+ * LibB's .plcproj maps the alias Ns_A to the library LibA. Both libraries
+ * define I_Event and FB_Box, so `EXTENDS Ns_A.I_Event` must bind LibA's node
+ * and never the same-named one in LibB (a last-segment guess would). The
+ * alias is case-insensitive (real projects spell `VND_Util.` next to `Vnd_Util`), an
+ * undeclared alias gets no edge, and a qualified base naming the class's own
+ * short name (`FB_Box EXTENDS Ns_A.FB_Box`) binds the other library's block.
+ * Run below and above MIN_FILES_FOR_PARALLEL: both venues resolve bases.
+ * ══════════════════════════════════════════════════════════════════ */
+
+#define ES_TC_PATH 256
+#define ES_TC_PAD_FILES 55
+
+static const char ES_TC_POU[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                                "<TcPlcObject Version=\"1.1.0.1\">\n"
+                                "  <POU Name=\"%s\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+                                "    <Declaration><![CDATA[%s\n"
+                                "VAR\n"
+                                "END_VAR\n"
+                                "]]></Declaration>\n"
+                                "    <Implementation>\n"
+                                "      <ST><![CDATA[]]></ST>\n"
+                                "    </Implementation>\n"
+                                "  </POU>\n"
+                                "</TcPlcObject>\n";
+
+static const char ES_TC_ITF[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                                "<TcPlcObject Version=\"1.1.0.1\">\n"
+                                "  <Itf Name=\"%s\" Id=\"{1}\">\n"
+                                "    <Declaration><![CDATA[%s\n"
+                                "]]></Declaration>\n"
+                                "    <Method Name=\"Fire\" Id=\"{2}\">\n"
+                                "      <Declaration><![CDATA[METHOD Fire : BOOL\n"
+                                "]]></Declaration>\n"
+                                "    </Method>\n"
+                                "  </Itf>\n"
+                                "</TcPlcObject>\n";
+
+static const char ES_TC_LIBA_PROJ[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+    "<Project DefaultTargets=\"Build\" "
+    "xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">\n"
+    "  <PropertyGroup>\n"
+    "    <Name>LibA</Name>\n"
+    "    <Title>LibA</Title>\n"
+    "    <DefaultNamespace>Ns_A</DefaultNamespace>\n"
+    "  </PropertyGroup>\n"
+    "</Project>\n";
+
+static const char ES_TC_LIBB_PROJ[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+    "<Project DefaultTargets=\"Build\" "
+    "xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">\n"
+    "  <PropertyGroup>\n"
+    "    <Name>LibB</Name>\n"
+    "    <Title>LibB</Title>\n"
+    "    <DefaultNamespace>Ns_B</DefaultNamespace>\n"
+    "  </PropertyGroup>\n"
+    "  <ItemGroup>\n"
+    "    <PlaceholderReference Include=\"LibA\">\n"
+    "      <DefaultResolution>LibA, * (Vendor)</DefaultResolution>\n"
+    "      <Namespace>Ns_A</Namespace>\n"
+    "      <QualifiedOnly>true</QualifiedOnly>\n"
+    "    </PlaceholderReference>\n"
+    "  </ItemGroup>\n"
+    "  <ItemGroup>\n"
+    "    <PlaceholderResolution Include=\"LibA\">\n"
+    "      <Resolution>LibA, 1.0.0.0 (Vendor)</Resolution>\n"
+    "    </PlaceholderResolution>\n"
+    "  </ItemGroup>\n"
+    "</Project>\n";
+
+/* Target file paths of the `edge_type` edges leaving the node `name` defined in
+ * `file`. Returns the edge count, or -1 when that source node is not found. */
+static int es_tc_edge_targets(cbm_store_t *store, const char *project, const char *name,
+                              const char *file, const char *edge_type,
+                              char out[][ES_TC_PATH], int max) {
+    cbm_node_t *nodes = NULL;
+    int count = 0;
+    int64_t source_id = 0;
+    if (cbm_store_find_nodes_by_name(store, project, name, &nodes, &count) != CBM_STORE_OK) {
+        return -1;
+    }
+    for (int i = 0; i < count; i++) {
+        if (nodes[i].file_path && strcmp(nodes[i].file_path, file) == 0) {
+            source_id = nodes[i].id;
+        }
+    }
+    cbm_store_free_nodes(nodes, count);
+    if (source_id == 0) {
+        return -1;
+    }
+    cbm_edge_t *edges = NULL;
+    int edge_count = 0;
+    if (cbm_store_find_edges_by_source_type(store, source_id, edge_type, &edges, &edge_count) !=
+        CBM_STORE_OK) {
+        return -1;
+    }
+    for (int i = 0; i < edge_count && i < max; i++) {
+        cbm_node_t target;
+        memset(&target, 0, sizeof(target));
+        out[i][0] = '\0';
+        if (cbm_store_find_node_by_id(store, edges[i].target_id, &target) == CBM_STORE_OK) {
+            snprintf(out[i], ES_TC_PATH, "%s", target.file_path ? target.file_path : "");
+            cbm_node_free_fields(&target);
+        }
+    }
+    cbm_store_free_edges(edges, edge_count);
+    return edge_count;
+}
+
+/* Expect exactly one `edge_type` edge from (name, file), landing in target_file.
+ * target_file NULL = expect none. Prints what was found on a mismatch. */
+static int es_tc_expect(cbm_store_t *store, const char *project, const char *name,
+                        const char *file, const char *edge_type, const char *target_file) {
+    char targets[8][ES_TC_PATH];
+    int n = es_tc_edge_targets(store, project, name, file, edge_type, targets, 8);
+    int ok = target_file ? (n == 1 && strcmp(targets[0], target_file) == 0) : (n == 0);
+    if (!ok) {
+        fprintf(stderr, "  [ES-TC] FAIL %s (%s) %s: got %d edge(s)", name, file, edge_type, n);
+        for (int i = 0; i < n && i < 8; i++) {
+            fprintf(stderr, " -> %s", targets[i]);
+        }
+        fprintf(stderr, ", expected %s\n", target_file ? target_file : "none");
+    }
+    return ok;
+}
+
+/* Index the two-library fixture (padded past the parallel threshold when asked)
+ * and return the number of failed expectations. */
+static int es_tc_namespace_fixture(bool parallel) {
+    static char names[ES_TC_PAD_FILES + 8][ES_TC_PATH];
+    static char bodies[ES_TC_PAD_FILES + 8][1024];
+    ES_LangFile files[ES_TC_PAD_FILES + 8];
+    int n = 0;
+    struct {
+        const char *path;
+        const char *tmpl;
+        const char *name;
+        const char *header;
+    } core[] = {
+        {"LibA/POUs/I_Event.TcIO", ES_TC_ITF, "I_Event", "INTERFACE I_Event"},
+        {"LibA/POUs/FB_Box.TcPOU", ES_TC_POU, "FB_Box", "FUNCTION_BLOCK FB_Box"},
+        {"LibB/POUs/I_Event.TcIO", ES_TC_ITF, "I_Event", "INTERFACE I_Event"},
+        {"LibB/POUs/I_Spec.TcIO", ES_TC_ITF, "I_Spec", "INTERFACE I_Spec EXTENDS Ns_A.I_Event"},
+        {"LibB/POUs/FB_Box.TcPOU", ES_TC_POU, "FB_Box", "FUNCTION_BLOCK FB_Box EXTENDS NS_a.FB_Box"},
+        {"LibB/POUs/FB_Other.TcPOU", ES_TC_POU, "FB_Other",
+         "FUNCTION_BLOCK FB_Other IMPLEMENTS Nope.I_Event, I_Spec"},
+    };
+    files[n++] = (ES_LangFile){"LibA/LibA.plcproj", ES_TC_LIBA_PROJ};
+    files[n++] = (ES_LangFile){"LibB/LibB.plcproj", ES_TC_LIBB_PROJ};
+    for (size_t i = 0; i < sizeof(core) / sizeof(core[0]); i++) {
+        snprintf(bodies[n], sizeof(bodies[n]), core[i].tmpl, core[i].name, core[i].header);
+        files[n] = (ES_LangFile){core[i].path, bodies[n]};
+        n++;
+    }
+    for (int i = 0; parallel && i < ES_TC_PAD_FILES; i++) {
+        char pad[32];
+        char header[64];
+        snprintf(pad, sizeof(pad), "FB_Pad%02d", i);
+        snprintf(header, sizeof(header), "FUNCTION_BLOCK %s", pad);
+        snprintf(names[n], sizeof(names[n]), "LibB/Pad/%s.TcPOU", pad);
+        snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, pad, header);
+        files[n] = (ES_LangFile){names[n], bodies[n]};
+        n++;
+    }
+
+    const char *old_workers = getenv("CBM_WORKERS");
+    char *saved_workers = old_workers ? strdup(old_workers) : NULL;
+    if (parallel) {
+        cbm_setenv("CBM_WORKERS", "4", 1);
+    }
+    ES_LangProj lp;
+    cbm_store_t *store = es_lang_index_files(&lp, files, n);
+    if (parallel) {
+        if (saved_workers) {
+            cbm_setenv("CBM_WORKERS", saved_workers, 1);
+        } else {
+            cbm_unsetenv("CBM_WORKERS");
+        }
+    }
+    free(saved_workers);
+    if (!store) {
+        es_lang_cleanup(&lp, store);
+        return 1;
+    }
+
+    const char *p = lp.project;
+    int failed = 0;
+    /* Binds LibA's I_Event, not LibB's own same-named interface. */
+    failed += !es_tc_expect(store, p, "I_Spec", "LibB/POUs/I_Spec.TcIO", "IMPLEMENTS",
+                            "LibA/POUs/I_Event.TcIO");
+    /* Case-insensitive alias; the same short name as the class itself. */
+    failed += !es_tc_expect(store, p, "FB_Box", "LibB/POUs/FB_Box.TcPOU", "INHERITS",
+                            "LibA/POUs/FB_Box.TcPOU");
+    failed += !es_tc_expect(store, p, "FB_Box", "LibA/POUs/FB_Box.TcPOU", "INHERITS", NULL);
+    /* Undeclared alias: no edge; the unqualified base next to it still binds. */
+    failed += !es_tc_expect(store, p, "FB_Other", "LibB/POUs/FB_Other.TcPOU", "IMPLEMENTS",
+                            "LibB/POUs/I_Spec.TcIO");
+    if (failed) {
+        es_dump_edge_histogram(store, p);
+    }
+    es_lang_cleanup(&lp, store);
+    return failed;
+}
+
+TEST(es_twincat_qualified_base_in_library_sequential) {
+    ASSERT_TRUE(es_tc_namespace_fixture(false) == 0);
+    PASS();
+}
+
+TEST(es_twincat_qualified_base_in_library_parallel) {
+    ASSERT_TRUE(es_tc_namespace_fixture(true) == 0);
+    PASS();
+}
+
+/* ══════════════════════════════════════════════════════════════════
  * FAMILY 3: IMPLEMENTS cross-file (Rust trait + struct)
  *
  * Trait defined in a.rs, impl block in b.rs.
@@ -952,6 +1170,9 @@ SUITE(edge_structural) {
     RUN_TEST(es_inherits_crossfile_typescript_red);
     RUN_TEST(es_inherits_crossfile_php_red);
     RUN_TEST(es_inherits_crossfile_kotlin_red);
+    /* GREEN: TwinCAT namespace-qualified bases, both resolve venues. */
+    RUN_TEST(es_twincat_qualified_base_in_library_sequential);
+    RUN_TEST(es_twincat_qualified_base_in_library_parallel);
 
     /* ── FAMILY 3: IMPLEMENTS cross-file (Rust) ──────────────── */
     /* Expected GREEN: project-wide registry covers both files. */

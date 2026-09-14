@@ -298,6 +298,21 @@ int cbm_pipeline_implements_go(cbm_pipeline_ctx_t *ctx);
  * parallel per-file resolve — the two venues must never diverge. */
 const char *cbm_semantic_base_edge_type(const cbm_gbuf_node_t *base_node);
 
+/* TwinCAT namespace-qualified base resolution (twincat_ns.c). `Vnd_Core.FB_Base`
+ * names FB_Base of the library the source's .plcproj maps the alias Vnd_Core to;
+ * it resolves inside that library only (no last-segment fallback). One instance
+ * per resolve run, shared by both venues; safe to use from parallel workers.
+ * cbm_tc_ns_new returns NULL without a repo path — resolve then yields NULL. */
+typedef struct cbm_tc_ns cbm_tc_ns_t;
+cbm_tc_ns_t *cbm_tc_ns_new(const char *repo_path);
+void cbm_tc_ns_free(cbm_tc_ns_t *ns);
+/* True when a base of a definition in `lang` must go through the namespace
+ * resolver INSTEAD of the plain registry lookup (a qualified TwinCAT base). */
+bool cbm_tc_ns_applies(CBMLanguage lang, const char *base);
+/* Borrowed registry QN of the one type-like target, or NULL. */
+const char *cbm_tc_ns_resolve_base(cbm_tc_ns_t *ns, const cbm_registry_t *reg,
+                                   const cbm_gbuf_t *gbuf, const char *rel_path, const char *base);
+
 /* Explicit-language override detection on the full graph (serial tail).
  * For every IMPLEMENTS/INHERITS edge whose source is a non-Go class, matches
  * the class's DEFINES_METHOD children by name against the base's and creates

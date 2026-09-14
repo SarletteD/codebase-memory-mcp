@@ -1502,6 +1502,9 @@ typedef struct {
      * necessary (#1669: 87% of a Java index), so it is the one that must never
      * again grow superlinear without saying so. */
     cbm_scale_probe_t scale;
+
+    /* Qualified TwinCAT base resolution (.plcproj cache, internally locked). */
+    cbm_tc_ns_t *tc_ns;
 } resolve_ctx_t;
 
 /* Minimum buffer space needed per arg JSON object */
@@ -2830,12 +2833,18 @@ static void resolve_file_rw(resolve_ctx_t *rc, resolve_worker_state_t *ws, CBMFi
 /* Resolve base_classes → INHERITS edges for one definition. */
 static void resolve_def_inherits(resolve_ctx_t *rc, resolve_worker_state_t *ws,
                                  const CBMDefinition *def, const cbm_gbuf_node_t *node,
-                                 const char *mq, const char **ik, const char **iv, int ic) {
+                                 const char *rel, CBMLanguage lang, const char *mq,
+                                 const char **ik, const char **iv, int ic) {
     if (!def->base_classes) {
         return;
     }
     for (int b = 0; def->base_classes[b]; b++) {
-        const char *bqn = resolve_as_class(rc->registry, def->base_classes[b], mq, ik, iv, ic);
+        /* Same qualified-TwinCAT-base rule as the sequential semantic pass. */
+        const char *bqn =
+            cbm_tc_ns_applies(lang, def->base_classes[b])
+                ? cbm_tc_ns_resolve_base(rc->tc_ns, rc->registry, rc->main_gbuf, rel,
+                                         def->base_classes[b])
+                : resolve_as_class(rc->registry, def->base_classes[b], mq, ik, iv, ic);
         if (!bqn) {
             continue;
         }
@@ -2923,8 +2932,9 @@ static void resolve_def_decorators(resolve_ctx_t *rc, resolve_worker_state_t *ws
 
 /* Resolve INHERITS + DECORATES + IMPLEMENTS for one file. */
 static void resolve_file_semantic(resolve_ctx_t *rc, resolve_worker_state_t *ws,
-                                  CBMFileResult *result, const char *module_qn,
-                                  const char **imp_keys, const char **imp_vals, int imp_count) {
+                                  CBMFileResult *result, const char *rel, CBMLanguage lang,
+                                  const char *module_qn, const char **imp_keys,
+                                  const char **imp_vals, int imp_count) {
     for (int d = 0; d < result->defs.count; d++) {
         CBMDefinition *def = &result->defs.items[d];
         if (!def->qualified_name) {
@@ -2934,7 +2944,8 @@ static void resolve_file_semantic(resolve_ctx_t *rc, resolve_worker_state_t *ws,
         if (!node) {
             continue;
         }
-        resolve_def_inherits(rc, ws, def, node, module_qn, imp_keys, imp_vals, imp_count);
+        resolve_def_inherits(rc, ws, def, node, rel, lang, module_qn, imp_keys, imp_vals,
+                             imp_count);
         resolve_def_decorators(rc, ws, def, node, module_qn, imp_keys, imp_vals, imp_count);
     }
     for (int t = 0; t < result->impl_traits.count; t++) {
@@ -3273,7 +3284,8 @@ static void resolve_worker(int worker_id, void *ctx_ptr) {
 
         /* ── INHERITS + DECORATES + IMPLEMENTS ──────────────────── */
         _ph_t0 = extract_now_ns();
-        resolve_file_semantic(rc, ws, result, module_qn, imp_keys, imp_vals, imp_count);
+        resolve_file_semantic(rc, ws, result, rel, lang, module_qn, imp_keys, imp_vals,
+                              imp_count);
         atomic_fetch_add_explicit(&rc->time_ns_semantic, extract_now_ns() - _ph_t0,
                                   memory_order_relaxed);
 
@@ -3357,6 +3369,7 @@ int cbm_parallel_resolve(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, 
         .module_def_index = module_def_index,
         .cross_registries = cross_registries,
         .rust_manifest = rust_manifest_ptr,
+        .tc_ns = cbm_tc_ns_new(ctx->repo_path),
     };
     atomic_init(&rc.next_file_idx, 0);
     atomic_init(&rc.lsp_cross_processed, 0);
@@ -3382,6 +3395,7 @@ int cbm_parallel_resolve(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, 
         rc.rust_shared_arena_live = false;
     }
     cbm_mutex_destroy(&rc.rust_shared_mu);
+    cbm_tc_ns_free(rc.tc_ns);
     if (rust_manifest_arena_live) {
         cbm_arena_destroy(&rust_manifest_arena);
     }

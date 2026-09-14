@@ -442,6 +442,7 @@ static void resolve_decorator(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *no
 }
 
 static void sem_process_def_edges(cbm_pipeline_ctx_t *ctx, const CBMDefinition *def,
+                                  const char *rel, CBMLanguage lang, cbm_tc_ns_t *tc_ns,
                                   const char *module_qn, const char **imp_keys,
                                   const char **imp_vals, int imp_count, int *inherits_count,
                                   int *decorates_count) {
@@ -454,8 +455,14 @@ static void sem_process_def_edges(cbm_pipeline_ctx_t *ctx, const CBMDefinition *
     }
     if (def->base_classes) {
         for (int b = 0; def->base_classes[b]; b++) {
-            const char *base_qn = resolve_as_class(ctx->registry, def->base_classes[b], module_qn,
-                                                   imp_keys, imp_vals, imp_count);
+            /* A qualified TwinCAT base resolves inside its library only — the same
+             * short name often exists in several libraries (twin: pass_parallel.c). */
+            const char *base_qn =
+                cbm_tc_ns_applies(lang, def->base_classes[b])
+                    ? cbm_tc_ns_resolve_base(tc_ns, ctx->registry, ctx->gbuf, rel,
+                                             def->base_classes[b])
+                    : resolve_as_class(ctx->registry, def->base_classes[b], module_qn, imp_keys,
+                                       imp_vals, imp_count);
             if (!base_qn) {
                 continue;
             }
@@ -541,9 +548,11 @@ int cbm_pipeline_pass_semantic(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *f
     int decorates_count = 0;
     int implements_count = 0;
     int errors = 0;
+    cbm_tc_ns_t *tc_ns = cbm_tc_ns_new(ctx->repo_path);
 
     for (int i = 0; i < file_count; i++) {
         if (cbm_pipeline_check_cancel(ctx)) {
+            cbm_tc_ns_free(tc_ns);
             return CBM_NOT_FOUND;
         }
 
@@ -567,8 +576,9 @@ int cbm_pipeline_pass_semantic(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *f
 
         /* ── INHERITS + DECORATES from definitions ──────────────── */
         for (int d = 0; d < result->defs.count; d++) {
-            sem_process_def_edges(ctx, &result->defs.items[d], module_qn, imp_keys, imp_vals,
-                                  imp_count, &inherits_count, &decorates_count);
+            sem_process_def_edges(ctx, &result->defs.items[d], rel, files[i].language, tc_ns,
+                                  module_qn, imp_keys, imp_vals, imp_count, &inherits_count,
+                                  &decorates_count);
         }
 
         /* ── IMPLEMENTS from impl_traits (Rust) ─────────────────── */
@@ -581,6 +591,7 @@ int cbm_pipeline_pass_semantic(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *f
             cbm_free_result(result);
         }
     }
+    cbm_tc_ns_free(tc_ns);
 
     /* ── Go-style implicit interface satisfaction ──────────────── */
     int go_impl = cbm_pipeline_implements_go(ctx);
