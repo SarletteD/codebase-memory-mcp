@@ -6829,6 +6829,12 @@ static const ext_lang_entry_t ext_lang_table[] = {
     {".hcl", "HCL"},       {".tf", "HCL"},         {".sql", "SQL"},       {".erl", "Erlang"},
     {".swift", "Swift"},   {".dart", "Dart"},      {".groovy", "Groovy"}, {".pl", "Perl"},
     {".r", "R"},           {".scss", "SCSS"},      {".vue", "Vue"},       {".svelte", "Svelte"},
+    /* Lowercased like file_ext(); names match src/discover/language.c. */
+    {".st", "Structured Text"},
+    {".tcpou", "TwinCAT"},
+    {".tcdut", "TwinCAT"},
+    {".tcgvl", "TwinCAT"},
+    {".tcio", "TwinCAT"},
     {NULL, NULL},
 };
 

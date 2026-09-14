@@ -337,6 +337,43 @@ TEST(arch_languages) {
     PASS();
 }
 
+/* TwinCAT object files and Structured Text are listed under the names the
+ * language registry uses; the extension match ignores case (.TcPOU). */
+TEST(arch_languages_twincat) {
+    cbm_store_t *s = cbm_store_open_memory();
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(cbm_store_upsert_project(s, "tc", "/tmp/tc"), CBM_STORE_OK);
+    const char *files[] = {"Lib/FB_Motor.TcPOU", "Lib/I_Motor.TcIO", "Lib/E_State.TcDUT",
+                           "Lib/GVL.TcGVL", "src/main.st"};
+    for (int i = 0; i < 5; i++) {
+        char qn[64];
+        snprintf(qn, sizeof(qn), "tc.%d", i);
+        cbm_node_t n = {.project = "tc",
+                        .label = "File",
+                        .name = files[i],
+                        .qualified_name = qn,
+                        .file_path = files[i]};
+        cbm_store_upsert_node(s, &n);
+    }
+    cbm_architecture_info_t info;
+    memset(&info, 0, sizeof(info));
+    const char *aspects[] = {"languages"};
+    ASSERT_EQ(cbm_store_get_architecture(s, "tc", NULL, aspects, 1, &info), CBM_STORE_OK);
+    int twincat = 0, st = 0;
+    for (int i = 0; i < info.language_count; i++) {
+        if (strcmp(info.languages[i].language, "TwinCAT") == 0)
+            twincat = info.languages[i].file_count;
+        if (strcmp(info.languages[i].language, "Structured Text") == 0)
+            st = info.languages[i].file_count;
+    }
+    ASSERT_EQ(twincat, 4);
+    ASSERT_EQ(st, 1);
+
+    cbm_store_architecture_free(&info);
+    cbm_store_close(s);
+    PASS();
+}
+
 TEST(arch_routes) {
     cbm_store_t *s = setup_arch_test_store();
     cbm_architecture_info_t info;
@@ -1682,6 +1719,7 @@ SUITE(store_arch) {
     RUN_TEST(arch_path_scoping);
     RUN_TEST(arch_empty_project);
     RUN_TEST(arch_languages);
+    RUN_TEST(arch_languages_twincat);
     RUN_TEST(arch_routes);
     RUN_TEST(arch_hotspots);
     RUN_TEST(arch_boundaries);
