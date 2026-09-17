@@ -144,10 +144,15 @@ static const cbm_gbuf_node_t *find_enclosing_node(cbm_pipeline_ctx_t *ctx, const
 }
 
 /* Resolve USAGE edges for one file's extracted usages. */
-static int resolve_usage_edges(cbm_pipeline_ctx_t *ctx, const CBMFileResult *result,
-                               const char *rel, const char *module_qn, const char **imp_keys,
-                               const char **imp_vals, int imp_count, CBMLanguage lang) {
+static int resolve_usage_edges(cbm_pipeline_ctx_t *ctx, cbm_tc_ns_t *tc_ns,
+                               const CBMFileResult *result, const char *rel, const char *module_qn,
+                               const char **imp_keys, const char **imp_vals, int imp_count,
+                               CBMLanguage lang) {
     int resolved = 0;
+    /* Structured Text: member resolution + occurrence aggregation (st_members.c). */
+    bool st = cbm_st_lang(lang);
+    cbm_st_usage_agg_t *agg = st ? cbm_st_usage_agg_new() : NULL;
+
     cbm_pipeline_lsp_reference_index_t reference_index = {0};
     bool reference_index_ready =
         cbm_pipeline_lsp_reference_index_build(&result->resolved_calls, &reference_index);
@@ -158,6 +163,19 @@ static int resolve_usage_edges(cbm_pipeline_ctx_t *ctx, const CBMFileResult *res
         }
         const cbm_gbuf_node_t *src = find_enclosing_node(ctx, usage->enclosing_func_qn, rel);
         if (!src) {
+            continue;
+        }
+        if (st) {
+            /* ST has no LSP branch. The bare-name target follows the generic
+             * fallback rules (cbm_st_resolve_plain); the member target is exact.
+             * Both are aggregated into one edge per pair with line/count and
+             * emitted after the loop. */
+            cbm_st_usage_agg_add(agg, src,
+                                 cbm_st_resolve_plain(ctx->registry, ctx->gbuf, lang, module_qn,
+                                                      imp_keys, imp_vals, imp_count, usage),
+                                 cbm_st_resolve_member(tc_ns, ctx->registry, ctx->gbuf, rel, lang,
+                                                       usage),
+                                 usage);
             continue;
         }
 
@@ -241,8 +259,10 @@ static int resolve_usage_edges(cbm_pipeline_ctx_t *ctx, const CBMFileResult *res
         cbm_gbuf_insert_edge(ctx->gbuf, src->id, tgt->id, edge_type, uprops);
         resolved++;
     }
+    resolved += cbm_st_usage_agg_flush(agg, ctx->gbuf);
     cbm_pipeline_lsp_reference_index_free(&reference_index);
     return resolved;
+
 }
 
 /* Resolve THROWS/RAISES edges for one file's extracted throws. */
@@ -331,13 +351,18 @@ int cbm_pipeline_pass_usages(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *fil
     int throw_resolved = 0;
     int rw_resolved = 0;
     int errors = 0;
+    /* Namespace-qualified TwinCAT types (`Vnd_Core.E_AlarmState.OFF`) resolve
+     * through the .plcproj alias, as bases do in pass_semantic.c. */
+    cbm_tc_ns_t *tc_ns = cbm_tc_ns_new(ctx->repo_path);
 
     for (int i = 0; i < file_count; i++) {
         if (cbm_pipeline_check_cancel(ctx)) {
+            cbm_tc_ns_free(tc_ns);
             return CBM_NOT_FOUND;
         }
 
         const char *path = files[i].path;
+
         const char *rel = files[i].rel_path;
 
         CBMFileResult *result = NULL;
@@ -377,8 +402,9 @@ int cbm_pipeline_pass_usages(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *fil
         char *module_qn = cbm_pipeline_fqn_module_dir(ctx->project_name, rel,
                                                       pu_module_is_dir(files[i].language));
 
-        usage_resolved += resolve_usage_edges(ctx, result, rel, module_qn, imp_keys, imp_vals,
-                                              imp_count, files[i].language);
+        usage_resolved += resolve_usage_edges(ctx, tc_ns, result, rel, module_qn, imp_keys,
+                                              imp_vals, imp_count, files[i].language);
+
         throw_resolved +=
             resolve_throw_edges(ctx, result, rel, module_qn, imp_keys, imp_vals, imp_count);
         rw_resolved += resolve_rw_edges(ctx, result, rel, module_qn, imp_keys, imp_vals, imp_count,
@@ -391,6 +417,7 @@ int cbm_pipeline_pass_usages(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *fil
         }
     }
 
+    cbm_tc_ns_free(tc_ns);
     cbm_log_info("pass.done", "pass", "usages", "usage", itoa_log(usage_resolved), "throws",
                  itoa_log(throw_resolved), "rw", itoa_log(rw_resolved), "errors", itoa_log(errors));
     return 0;

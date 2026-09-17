@@ -2169,6 +2169,35 @@ static CBMFileResult *extract_file_ex_body(const char *source, int source_len, C
  * stay buffer-relative, which is all their consumer (same-buffer LSP matching)
  * relies on, and ST has no LSP. */
 static void twincat_remap_lines(CBMFileResult *r, const CBMTwinCATUnit *u) {
+    /* Enum members: hand back the base type the normalizer stripped for the
+     * grammar (") UINT;" -> ");"). The base is keyed by the ST line of its ")",
+     * which follows the member and lies inside the enum's Type range, so this
+     * runs BEFORE the lines below become XML lines. Struct fields are never
+     * touched (is_enum_member), even on a line shared with an enum. */
+    for (int i = 0; i < r->defs.count; i++) {
+        CBMDefinition *d = &r->defs.items[i];
+        if (!d->is_enum_member || !d->parent_class) {
+            continue;
+        }
+        for (int j = 0; j < r->defs.count; j++) {
+            const CBMDefinition *t = &r->defs.items[j];
+            if (!t->label || strcmp(t->label, "Type") != 0 || !t->qualified_name ||
+                strcmp(t->qualified_name, d->parent_class) != 0) {
+                continue;
+            }
+            const char *base = cbm_twincat_enum_base_in(u, d->start_line, t->end_line);
+            if (base) {
+                d->return_type = cbm_arena_sprintf(&r->arena, "%s", base);
+            }
+            break;
+        }
+    }
+    for (int i = 0; i < r->usages.count; i++) {
+        CBMUsage *us = &r->usages.items[i];
+        if (us->start_line > 0) {
+            us->start_line = cbm_twincat_xml_line(u, us->start_line);
+        }
+    }
     for (int i = 0; i < r->defs.count; i++) {
         CBMDefinition *d = &r->defs.items[i];
         if (d->label && strcmp(d->label, "Module") == 0) {

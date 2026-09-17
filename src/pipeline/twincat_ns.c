@@ -445,6 +445,17 @@ void cbm_tc_ns_free(cbm_tc_ns_t *ns) {
     free(ns);
 }
 
+bool cbm_tc_ns_same_library(cbm_tc_ns_t *ns, const char *rel_a, const char *rel_b) {
+    if (!ns || !rel_a || !rel_b) {
+        return false;
+    }
+    cbm_mutex_lock(&ns->mu);
+    const tc_project_t *a = project_of_file(ns, rel_a);
+    const tc_project_t *b = project_of_file(ns, rel_b);
+    cbm_mutex_unlock(&ns->mu);
+    return a && b && a == b;
+}
+
 bool cbm_tc_ns_applies(CBMLanguage lang, const char *base) {
     return lang == CBM_LANG_TWINCAT && base && strchr(base, '.') != NULL;
 }

@@ -74,7 +74,7 @@ Guarded by the `contract_all_grammars_in_graph` graph-breadth test in
 | scheme   | `extract_lisp_def`: `(define …)` head-symbol forms in `list` |
 | slang    | added to the C-family declarator-name gate (tree-sitter-cpp/hlsl fork) |
 | squirrel | `resolve_func_name`: `function_declaration` → `identifier` child |
-| st       | `FUNCTION_BLOCK`/`PROGRAM` registered as class types; `find_class_body` answers `CBM_LANG_ST` **before** the `body`/`members` field probe, because the grammar tags a trailing body statement with the field name `body` and the probe would return that statement as the member container |
+| st       | `FUNCTION_BLOCK`/`PROGRAM` registered as class types; `find_class_body` answers `CBM_LANG_ST` **before** the `body`/`members` field probe, because the grammar tags a trailing body statement with the field name `body` and the probe would return that statement as the member container. `extract_st_type_members`: `type_definition > enumerated_type_inline > enumerator` / `structure_type_inline > structure_field` become `Field` defs (enum members with `enum_value`; a trailing comma parses as an empty enumerator and is skipped). The grammar has no `UNION` and no enum base type; the TwinCAT transcoder rewrites `UNION` → `STRUCT` and records the stripped `) UINT;` base per enum line so the members get it back as `return_type` |
 
 ## Local source patches (applied atop pinned upstream)
 

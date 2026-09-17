@@ -312,6 +312,37 @@ bool cbm_tc_ns_applies(CBMLanguage lang, const char *base);
 /* Borrowed registry QN of the one type-like target, or NULL. */
 const char *cbm_tc_ns_resolve_base(cbm_tc_ns_t *ns, const cbm_registry_t *reg,
                                    const cbm_gbuf_t *gbuf, const char *rel_path, const char *base);
+/* True when both files are governed by the same .plcproj library. */
+bool cbm_tc_ns_same_library(cbm_tc_ns_t *ns, const char *rel_a, const char *rel_b);
+
+/* Structured Text / TwinCAT DUT members (st_members.c): exact resolution of a
+ * member token (`E_State.CLOSE`, `_par.Inner.Depth`) to its Field node, the
+ * registry exclusion that keeps a BARE name from ever binding a DUT member,
+ * the ST twin of the generic textual fallback, and per-file aggregation of
+ * USAGE occurrences into one edge per (source, target) carrying `line`
+ * (first) and `count`. Both resolve venues — pass_usages.c and
+ * pass_parallel.c — route every ST usage through these. */
+bool cbm_st_lang(CBMLanguage lang);
+/* A Field whose parent is a Type node (enum member / struct field). Such defs
+ * are NOT registered as symbols; every registry seeding site asks this. */
+bool cbm_st_is_dut_member_qn(const cbm_gbuf_t *gbuf, const char *label, const char *qn);
+bool cbm_st_is_dut_member(const cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *tgt);
+/* The generic bare-name target for an ST usage (registry fallback + its guards), or NULL. */
+const cbm_gbuf_node_t *cbm_st_resolve_plain(const cbm_registry_t *reg, const cbm_gbuf_t *gbuf,
+                                            CBMLanguage lang, const char *module_qn,
+                                            const char **imp_keys, const char **imp_vals,
+                                            int imp_count, const CBMUsage *usage);
+const cbm_gbuf_node_t *cbm_st_resolve_member(cbm_tc_ns_t *ns, const cbm_registry_t *reg,
+                                             const cbm_gbuf_t *gbuf, const char *rel,
+                                             CBMLanguage lang, const CBMUsage *usage);
+typedef struct cbm_st_usage_agg cbm_st_usage_agg_t;
+cbm_st_usage_agg_t *cbm_st_usage_agg_new(void);
+/* Record one usage: `tgt` (type-level hit, may be NULL) and `member` (may be NULL). */
+void cbm_st_usage_agg_add(cbm_st_usage_agg_t *agg, const cbm_gbuf_node_t *src,
+                          const cbm_gbuf_node_t *tgt, const cbm_gbuf_node_t *member,
+                          const CBMUsage *usage);
+/* Emit the aggregated USAGE edges into gbuf and free agg (NULL-safe); returns the edge count. */
+int cbm_st_usage_agg_flush(cbm_st_usage_agg_t *agg, cbm_gbuf_t *gbuf);
 
 /* Explicit-language override detection on the full graph (serial tail).
  * For every IMPLEMENTS/INHERITS edge whose source is a non-Go class, matches

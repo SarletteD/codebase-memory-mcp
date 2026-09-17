@@ -2589,6 +2589,193 @@ void cbm_extract_usages(CBMExtractCtx *ctx) {
 // --- Unified handler: called once per node by the cursor walk ---
 // Uses WalkState flags instead of parent-chain walks for O(1) context checks.
 
+/* ── Structured Text member tokens ────────────────────────────────────────────
+ * `E_State.CLOSE`, `Vnd_Core.E_AlarmState.OFF` and `_par.Inner.Depth` all parse
+ * as nested member_access_expression(object, member). The member identifier is
+ * a reference node of its own and reaches the resolver as the bare name
+ * "CLOSE" — which, once enum members and struct fields are Field nodes, would
+ * bind by unique name to whichever enum happens to own a CLOSE. So a member
+ * token additionally records the dotted receiver text (only when the receiver
+ * is a plain identifier chain — `arr[0].x` and `THIS^.x` record nothing) and,
+ * when the chain's head is declared in a VAR block of an enclosing POU, that
+ * declared type. The resolver walks Type → Field → return_type from there and
+ * never guesses. The object half (`E_State`) stays an ordinary usage. */
+
+static bool st_is_identifier_chain(TSNode n) {
+    const char *k = ts_node_type(n);
+    if (strcmp(k, "identifier") == 0 || strcmp(k, "qualified_identifier") == 0) {
+        return true;
+    }
+    if (strcmp(k, "member_access_expression") != 0) {
+        return false;
+    }
+    TSNode obj = ts_node_child_by_field_name(n, TS_FIELD("object"));
+    TSNode mem = ts_node_child_by_field_name(n, TS_FIELD("member"));
+    return !ts_node_is_null(obj) && !ts_node_is_null(mem) &&
+           strcmp(ts_node_type(mem), "identifier") == 0 && st_is_identifier_chain(obj);
+}
+
+/* ST identifiers are case-insensitive: `_Par` and `_par` name one variable. */
+static bool st_node_text_equals_ci(CBMExtractCtx *ctx, TSNode n, const char *name) {
+    uint32_t s = ts_node_start_byte(n);
+    uint32_t e = ts_node_end_byte(n);
+    size_t len = strlen(name);
+    if (e < s || (size_t)(e - s) != len || (int)e > ctx->source_len) {
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (tolower((unsigned char)ctx->source[s + i]) != tolower((unsigned char)name[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* POU-level nodes whose direct children are VAR blocks. */
+static bool st_is_var_owner(const char *kind) {
+    return strcmp(kind, "method_declaration") == 0 || strcmp(kind, "function_declaration") == 0 ||
+           strcmp(kind, "function_block_declaration") == 0 ||
+           strcmp(kind, "program_declaration") == 0 || strcmp(kind, "property_accessor") == 0 ||
+           strcmp(kind, "property_declaration") == 0 ||
+           strcmp(kind, "interface_declaration") == 0 || strcmp(kind, "source_file") == 0;
+}
+
+/* Declared type text of `head` in the VAR blocks directly under `owner`, or NULL. */
+static const char *st_declared_type_in(CBMExtractCtx *ctx, TSNode owner, const char *head) {
+    uint32_t n = ts_node_named_child_count(owner);
+    for (uint32_t i = 0; i < n; i++) {
+        TSNode blk = ts_node_named_child(owner, i);
+        const char *bk = ts_node_type(blk);
+        if (strncmp(bk, "var_", 4) != 0 && strcmp(bk, "global_var_declaration_block") != 0) {
+            continue;
+        }
+        uint32_t m = ts_node_named_child_count(blk);
+        for (uint32_t j = 0; j < m; j++) {
+            TSNode decl = ts_node_named_child(blk, j);
+            if (strcmp(ts_node_type(decl), "variable_declaration") != 0) {
+                continue;
+            }
+            uint32_t c = ts_node_child_count(decl);
+            for (uint32_t k = 0; k < c; k++) {
+                const char *fn = ts_node_field_name_for_child(decl, k);
+                if (!fn || strcmp(fn, "names") != 0 ||
+                    !st_node_text_equals_ci(ctx, ts_node_child(decl, k), head)) {
+                    continue;
+                }
+                TSNode type = ts_node_child_by_field_name(decl, TS_FIELD("type"));
+                return ts_node_is_null(type) ? NULL : cbm_node_text(ctx->arena, type, ctx->source);
+            }
+        }
+    }
+    return NULL;
+}
+
+/* Append the receiver chain as canonical dotted identifiers ("a.b.c"), built
+ * from the identifier TOKENS rather than the raw source slice, so `_par . Inner`
+ * and a comment between segments still yield an exact lookup key. Returns false
+ * when the chain does not fit. */
+static bool st_chain_append(CBMExtractCtx *ctx, TSNode n, char *buf, size_t size, size_t *len) {
+    const char *k = ts_node_type(n);
+    if (strcmp(k, "member_access_expression") == 0) {
+        TSNode obj = ts_node_child_by_field_name(n, TS_FIELD("object"));
+        TSNode mem = ts_node_child_by_field_name(n, TS_FIELD("member"));
+        if (ts_node_is_null(obj) || ts_node_is_null(mem) ||
+            !st_chain_append(ctx, obj, buf, size, len) || *len + 1 >= size) {
+            return false;
+        }
+        buf[(*len)++] = '.';
+        return st_chain_append(ctx, mem, buf, size, len);
+    }
+    if (strcmp(k, "qualified_identifier") == 0) {
+        uint32_t c = ts_node_named_child_count(n);
+        for (uint32_t i = 0; i < c; i++) {
+            if (i > 0) {
+                if (*len + 1 >= size) {
+                    return false;
+                }
+                buf[(*len)++] = '.';
+            }
+            if (!st_chain_append(ctx, ts_node_named_child(n, i), buf, size, len)) {
+                return false;
+            }
+        }
+        return c > 0;
+    }
+    uint32_t s = ts_node_start_byte(n);
+    uint32_t e = ts_node_end_byte(n);
+    if (e <= s || (int)e > ctx->source_len || *len + (e - s) >= size) {
+        return false;
+    }
+    memcpy(buf + *len, ctx->source + s, e - s);
+    *len += e - s;
+    return true;
+}
+
+static void st_annotate_member_usage(CBMExtractCtx *ctx, CBMUsage *usage, TSNode node) {
+    if (ctx->language != CBM_LANG_ST || strcmp(ts_node_type(node), "identifier") != 0) {
+        return;
+    }
+    TSNode parent = ts_node_parent(node);
+    if (ts_node_is_null(parent) || strcmp(ts_node_type(parent), "member_access_expression") != 0) {
+        return;
+    }
+    TSNode member = ts_node_child_by_field_name(parent, TS_FIELD("member"));
+    if (ts_node_is_null(member) || !ts_node_eq(member, node)) {
+        return;
+    }
+    usage->is_member_access = true;
+    TSNode obj = ts_node_child_by_field_name(parent, TS_FIELD("object"));
+    if (ts_node_is_null(obj) || !st_is_identifier_chain(obj)) {
+        return;
+    }
+    char chain[1024];
+    size_t chain_len = 0;
+    if (!st_chain_append(ctx, obj, chain, sizeof(chain), &chain_len)) {
+        return;
+    }
+    usage->member_qualifier = cbm_arena_strndup(ctx->arena, chain, chain_len);
+    TSNode head = obj;
+    while (strcmp(ts_node_type(head), "member_access_expression") == 0) {
+        head = ts_node_child_by_field_name(head, TS_FIELD("object"));
+    }
+    /* A qualified_identifier head is a namespace path, never a variable. */
+    if (strcmp(ts_node_type(head), "identifier") != 0) {
+        return;
+    }
+    char *head_name = cbm_node_text(ctx->arena, head, ctx->source);
+    if (!head_name || !head_name[0]) {
+        return;
+    }
+    /* Innermost VAR scope wins: a method-local shadows an FB-level member. */
+    for (TSNode owner = ts_node_parent(parent); !ts_node_is_null(owner);
+         owner = ts_node_parent(owner)) {
+        if (!st_is_var_owner(ts_node_type(owner))) {
+            continue;
+        }
+        const char *type = st_declared_type_in(ctx, owner, head_name);
+        if (type) {
+            usage->qualifier_type = type;
+            return;
+        }
+    }
+}
+
+/* True for the `member` identifier of a Structured Text member access. A write
+ * to `_par.Depth` assigns the receiver's field, not a name in this scope, so the
+ * token still counts as a reference to that field (the READS/WRITES record is
+ * extracted separately and unaffected). */
+static bool st_is_member_token(CBMExtractCtx *ctx, TSNode node) {
+    if (ctx->language != CBM_LANG_ST || strcmp(ts_node_type(node), "identifier") != 0) {
+        return false;
+    }
+    TSNode parent = ts_node_parent(node);
+    if (ts_node_is_null(parent) || strcmp(ts_node_type(parent), "member_access_expression") != 0) {
+        return false;
+    }
+    TSNode member = ts_node_child_by_field_name(parent, TS_FIELD("member"));
+    return !ts_node_is_null(member) && ts_node_eq(member, node);
+}
+
 void handle_usages(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, WalkState *state) {
     if (emit_direct_perl_coderef_usage(ctx, node, state->enclosing_func_qn,
                                        active_lexical_scope_id(state))) {
@@ -2634,7 +2821,9 @@ void handle_usages(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, Wal
                 }
                 usage.site_start_byte = ts_node_start_byte(node);
                 usage.site_end_byte = ts_node_end_byte(node);
+                usage.start_line = ts_node_start_point(node).row + 1;
                 cbm_usages_push(&ctx->result->usages, ctx->arena, usage);
+
             }
         }
         return;
@@ -2670,8 +2859,9 @@ void handle_usages(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, Wal
     if (!reference_node) {
         return;
     }
-    if (is_write_occurrence(ctx, node, spec, state)) {
+    if (is_write_occurrence(ctx, node, spec, state) && !st_is_member_token(ctx, node)) {
         if (ctx->language == CBM_LANG_OBJECTSCRIPT_UDL ||
+
             ctx->language == CBM_LANG_OBJECTSCRIPT_ROUTINE) {
             char *binding_name = reference_name(ctx, node);
             if (binding_name && binding_name[0] && !cbm_is_keyword(binding_name, ctx->language)) {
@@ -2692,6 +2882,9 @@ void handle_usages(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, Wal
          * it, and the Go Field guard keys on it (#1962). */
         usage.is_member_access = strcmp(ts_node_type(node), "field_identifier") == 0;
         stamp_usage_site(ctx, &usage, node, name, state);
+        usage.start_line = ts_node_start_point(node).row + 1;
+        st_annotate_member_usage(ctx, &usage, node);
         cbm_usages_push(&ctx->result->usages, ctx->arena, usage);
+
     }
 }

@@ -22,12 +22,21 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* One enum base type the normalizer strips for the grammar (") UINT;" -> ");"),
+ * keyed by the 1-based line of the ")" in the generated ST. */
+typedef struct {
+    uint32_t st_line;
+    char base[8];
+} CBMTwinCATEnumBase;
+
 typedef struct {
     char *text;          /* assembled + normalized ST, NUL-terminated (heap) */
     int len;             /* strlen(text) */
     uint32_t *xml_line;  /* xml_line[i] = 1-based XML line of ST line i+1 (heap) */
     uint32_t line_count; /* entries in xml_line */
     uint32_t xml_lines;  /* line count of the XML file itself */
+    CBMTwinCATEnumBase *enum_bases; /* stripped enum base types (heap), may be NULL */
+    uint32_t enum_base_count;
 } CBMTwinCATUnit;
 
 /* Transcode one TwinCAT object file. Returns false when the file holds no
@@ -44,5 +53,9 @@ char *cbm_twincat_normalize(const char *src, int len, int *out_len);
 
 /* Map a 1-based ST line to its 1-based XML line (clamped into range). */
 uint32_t cbm_twincat_xml_line(const CBMTwinCATUnit *unit, uint32_t st_line);
+
+/* Base type of the enum whose ")" lies within ST lines [st_first, st_last], or NULL. */
+const char *cbm_twincat_enum_base_in(const CBMTwinCATUnit *unit, uint32_t st_first,
+                                     uint32_t st_last);
 
 #endif /* CBM_TWINCAT_XML_H */

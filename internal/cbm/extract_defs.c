@@ -192,6 +192,7 @@ enum { RT_PAIR_SIZE = 2 };
 // Forward declarations
 static void extract_func_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec);
 static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec);
+static void extract_st_type_members(CBMExtractCtx *ctx, TSNode node, const char *class_qn);
 static void walk_defs(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec, int depth_unused);
 static void extract_variables(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec);
 static void extract_var_names(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec);
@@ -4678,6 +4679,10 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
     if (strcmp(label, "Enum") == 0) {
         extract_enum_members(ctx, node, class_qn);
     }
+    /* Structured Text: the members of a TYPE (enum, struct, union) become Field defs. */
+    if (ctx->language == CBM_LANG_ST && strcmp(kind, "type_definition") == 0) {
+        extract_st_type_members(ctx, node, class_qn);
+    }
 
     // Extract methods inside the class
     extract_class_methods(ctx, node, class_qn, spec);
@@ -4735,6 +4740,159 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
                 cbm_defs_push(&ctx->result->defs, a, pdef);
             }
         }
+    }
+}
+
+/* IEC 61131-3 ST integer literal: optional sign, decimal digits with '_'
+ * separators, or a based literal "16#FF" / "2#1010" / "8#17". Returns false for
+ * anything else (a named constant, a typed literal) and for a magnitude that
+ * does not fit int64_t, so the caller can leave the member's value unknown
+ * instead of guessing or overflowing. */
+static bool st_parse_int_literal(const char *text, int64_t *out) {
+    if (!text || !out) {
+        return false;
+    }
+    const char *p = text;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    bool neg = false;
+    if (*p == '-' || *p == '+') {
+        neg = *p == '-';
+        p++;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+    }
+    int base = 10;
+    const char *hash = strchr(p, '#');
+    if (hash) {
+        int b = 0;
+        for (const char *q = p; q < hash; q++) {
+            if (*q < '0' || *q > '9' || b > 16) {
+                return false;
+            }
+            b = b * 10 + (*q - '0');
+        }
+        if (b != 2 && b != 8 && b != 10 && b != 16) {
+            return false;
+        }
+        base = b;
+        p = hash + 1;
+    }
+    if (!*p) {
+        return false;
+    }
+    /* Magnitude bound: INT64_MAX, or INT64_MAX + 1 for a negative literal. */
+    const uint64_t limit = neg ? (uint64_t)INT64_MAX + 1u : (uint64_t)INT64_MAX;
+    uint64_t v = 0;
+    for (; *p; p++) {
+        if (*p == '_') {
+            continue;
+        }
+        int d;
+        if (*p >= '0' && *p <= '9') {
+            d = *p - '0';
+        } else if (*p >= 'a' && *p <= 'f') {
+            d = *p - 'a' + 10;
+        } else if (*p >= 'A' && *p <= 'F') {
+            d = *p - 'A' + 10;
+        } else {
+            return false;
+        }
+        if (d >= base || v > (limit - (uint64_t)d) / (uint64_t)base) {
+            return false;
+        }
+        v = v * (uint64_t)base + (uint64_t)d;
+    }
+    if (neg) {
+        *out = v == limit ? INT64_MIN : -(int64_t)v;
+    } else {
+        *out = (int64_t)v;
+    }
+    return true;
+}
+
+/* Structured Text DUT internals. A `type_definition` (label "Type") is one of
+ *
+ *   TYPE E_State : ( ONE_TIME_INIT := 0, INIT, OPEN := 2 ); END_TYPE
+ *   TYPE T_Par : STRUCT NumberOfPulses : Vnd_Core.I_ParameterInteger; END_STRUCT END_TYPE
+ *
+ * and its members become "Field" defs under the Type — the same label FB
+ * properties already use — so a refactoring can ask "who uses E_State.CLOSE" of
+ * the graph. An enum member carries enum_value: the explicit literal, else the
+ * previous member's value + 1 (first = 0); a value that is not an integer
+ * literal, or one past INT64_MAX, leaves the member (and the implicit ones
+ * after it) without a value. return_type is the declared field type text for
+ * structs and the enum's base type for enum members: the grammar cannot
+ * express `) UINT;`, so plain .st always yields INT here and the TwinCAT
+ * transcoder patches the real base in afterwards (cbm.c, from the
+ * CBMTwinCATUnit side table, keyed on is_enum_member).
+ *
+ * The grammar turns a trailing comma into a zero-length enumerator; an empty
+ * name is skipped. Comments between members are extras and never match. */
+static void extract_st_type_members(CBMExtractCtx *ctx, TSNode node, const char *class_qn) {
+    CBMArena *a = ctx->arena;
+    TSNode def = ts_node_child_by_field_name(node, TS_FIELD("definition"));
+    if (ts_node_is_null(def)) {
+        return;
+    }
+    const char *dk = ts_node_type(def);
+    bool is_enum = strcmp(dk, "enumerated_type_inline") == 0;
+    bool is_struct = strcmp(dk, "structure_type_inline") == 0;
+    if (!is_enum && !is_struct) {
+        return;
+    }
+    int64_t next_value = 0;
+    bool value_known = true;
+    uint32_t count = ts_node_named_child_count(def);
+    for (uint32_t i = 0; i < count; i++) {
+        TSNode member = ts_node_named_child(def, i);
+        const char *mk = ts_node_type(member);
+        if (strcmp(mk, is_enum ? "enumerator" : "structure_field") != 0) {
+            continue;
+        }
+        TSNode name_node = ts_node_child_by_field_name(member, TS_FIELD("name"));
+        if (ts_node_is_null(name_node)) {
+            continue;
+        }
+        char *name = cbm_node_text(a, name_node, ctx->source);
+        if (!name || !name[0]) {
+            continue;
+        }
+        CBMDefinition fdef;
+        memset(&fdef, 0, sizeof(fdef));
+        fdef.name = name;
+        fdef.qualified_name = cbm_arena_sprintf(a, "%s.%s", class_qn, name);
+        fdef.label = "Field";
+        fdef.file_path = ctx->rel_path;
+        fdef.parent_class = class_qn;
+        fdef.start_line = ts_node_start_point(member).row + TS_LINE_OFFSET;
+        fdef.end_line = ts_node_end_point(member).row + TS_LINE_OFFSET;
+        fdef.is_exported = true;
+        if (is_enum) {
+            TSNode value_node = ts_node_child_by_field_name(member, TS_FIELD("value"));
+            if (!ts_node_is_null(value_node)) {
+                int64_t v = 0;
+                value_known = st_parse_int_literal(cbm_node_text(a, value_node, ctx->source), &v);
+                next_value = v;
+            }
+            fdef.is_enum_member = true;
+            fdef.has_enum_value = value_known;
+            fdef.enum_value = value_known ? next_value : 0;
+            if (next_value == INT64_MAX) {
+                value_known = false; /* the successor is not representable */
+            } else {
+                next_value++;
+            }
+            fdef.return_type = "INT";
+        } else {
+            TSNode type_node = ts_node_child_by_field_name(member, TS_FIELD("type"));
+            if (!ts_node_is_null(type_node)) {
+                fdef.return_type = cbm_node_text(a, type_node, ctx->source);
+            }
+        }
+        cbm_defs_push(&ctx->result->defs, a, fdef);
     }
 }
 

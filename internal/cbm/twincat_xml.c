@@ -292,6 +292,32 @@ static void pass_pragma(TcBuf *out, const char *s, size_t n) {
     cp_flush(&c, n);
 }
 
+/* Integer base types an enum may carry: "TYPE E : ( ... ) UINT;". */
+static const char *const ENUM_BASES[] = {"UINT", "INT",   "BYTE",  "WORD", "DWORD", "DINT",
+                                         "SINT", "USINT", "UDINT", "LINT", "ULINT", NULL};
+
+/* "UNION" / "END_UNION" -> "STRUCT" / "END_STRUCT": the grammar has no union,
+ * and for the graph a union's members are fields of the type like a struct's. */
+static void pass_union(TcBuf *out, const char *s, size_t n) {
+    TcCopy c = {out, s, 0};
+    for (size_t i = 0; i < n;) {
+        if (up(s[i]) == 'E' && starts_word(s, i) && ci_at(s, n, i, "END_UNION") &&
+            ends_word(s, n, i + 9)) {
+            cp_replace(&c, i, i + 9, "END_STRUCT", 10);
+            i += 9;
+            continue;
+        }
+        if (up(s[i]) == 'U' && starts_word(s, i) && ci_at(s, n, i, "UNION") &&
+            ends_word(s, n, i + 5)) {
+            cp_replace(&c, i, i + 5, "STRUCT", 6);
+            i += 5;
+            continue;
+        }
+        i++;
+    }
+    cp_flush(&c, n);
+}
+
 /* END_STRUCT not followed by ';' gets one. */
 static void pass_struct_semi(TcBuf *out, const char *s, size_t n) {
     static const char KW[] = "END_STRUCT";
@@ -316,8 +342,7 @@ static void pass_struct_semi(TcBuf *out, const char *s, size_t n) {
 
 /* Enum base type ") UINT;" -> ");". */
 static void pass_enum_base(TcBuf *out, const char *s, size_t n) {
-    static const char *const BASES[] = {"UINT", "INT",   "BYTE",  "WORD", "DWORD", "DINT",
-                                        "SINT", "USINT", "UDINT", "LINT", "ULINT", NULL};
+
     TcCopy c = {out, s, 0};
     for (size_t i = 0; i < n; i++) {
         if (s[i] != ')') {
@@ -325,7 +350,7 @@ static void pass_enum_base(TcBuf *out, const char *s, size_t n) {
         }
         size_t j = skip_blanks(s, n, i + 1);
         size_t k = word_end(s, n, j);
-        if (k > j && span_in(s + j, k - j, BASES)) {
+        if (k > j && span_in(s + j, k - j, ENUM_BASES)) {
             size_t m = skip_blanks(s, n, k);
             if (m < n && s[m] == ';') {
                 cp_replace(&c, i, m + 1, ");", 2);
@@ -836,7 +861,9 @@ static void pass_type_extends(TcBuf *out, const char *s, size_t n) {
 
 char *cbm_twincat_normalize(const char *src, int len, int *out_len) {
     static const TcPass PASSES[] = {
-        pass_pragma,       pass_struct_semi,   pass_enum_base,  pass_at_address,
+        pass_pragma,       pass_union,         pass_struct_semi, pass_enum_base,
+        pass_at_address,
+
         pass_reference_to, pass_var_stat,      pass_persistent, pass_and_then,
         pass_arr_init,     pass_ctor_args,     pass_array_star, pass_str_len,
         pass_pou_access,   pass_program_as_fb, pass_modifier,   pass_type_extends,
@@ -1325,6 +1352,56 @@ static void assemble(TcAsm *a, const TcModel *m, const TcPouKind *kind) {
     asm_line(a, kind->end_kw, close_or_open(obj));
 }
 
+/* Record every enum base type the normalizer is about to strip, keyed by the
+ * 1-based line of its ")" in the assembled ST. Every normalization pass keeps
+ * newline count and order, so the line survives into the parsed text and lets
+ * cbm.c hand the base back to the enum's members. Allocation failure only
+ * loses the bases (members then keep the grammar's INT default). */
+static void collect_enum_bases(const char *s, size_t n, CBMTwinCATUnit *out) {
+    uint32_t line = 1;
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] == '\n') {
+            line++;
+            continue;
+        }
+        if (s[i] != ')') {
+            continue;
+        }
+        size_t j = skip_blanks(s, n, i + 1);
+        size_t k = word_end(s, n, j);
+        if (k <= j || !span_in(s + j, k - j, ENUM_BASES)) {
+            continue;
+        }
+        size_t m = skip_blanks(s, n, k);
+        if (m >= n || s[m] != ';' || k - j >= sizeof(out->enum_bases[0].base)) {
+            continue;
+        }
+        CBMTwinCATEnumBase *grown =
+            realloc(out->enum_bases, (out->enum_base_count + 1) * sizeof(*grown));
+        if (!grown) {
+            return;
+        }
+        out->enum_bases = grown;
+        CBMTwinCATEnumBase *e = &out->enum_bases[out->enum_base_count++];
+        e->st_line = line;
+        for (size_t q = 0; q < k - j; q++) {
+            e->base[q] = up(s[j + q]);
+        }
+        e->base[k - j] = '\0';
+    }
+}
+
+const char *cbm_twincat_enum_base_in(const CBMTwinCATUnit *unit, uint32_t st_first,
+                                     uint32_t st_last) {
+    for (uint32_t i = 0; unit && i < unit->enum_base_count; i++) {
+        uint32_t l = unit->enum_bases[i].st_line;
+        if (l >= st_first && l <= st_last) {
+            return unit->enum_bases[i].base;
+        }
+    }
+    return NULL;
+}
+
 static uint32_t count_lines(const char *s, size_t n) {
     uint32_t lines = 0;
     for (size_t i = 0; i < n; i++) {
@@ -1356,6 +1433,9 @@ bool cbm_twincat_to_st(const char *xml, int xml_len, CBMTwinCATUnit *out) {
     TcAsm a = {0};
     assemble(&a, &m, kind);
     model_free(&m);
+    if (!a.out.oom) {
+        collect_enum_bases(a.out.p ? a.out.p : "", a.out.len, out);
+    }
     int norm_len = 0;
     char *norm = (a.out.oom || a.map.oom)
                      ? NULL
@@ -1363,9 +1443,12 @@ bool cbm_twincat_to_st(const char *xml, int xml_len, CBMTwinCATUnit *out) {
     tb_free(&a.out);
     if (!norm) {
         free(a.map.v);
+        free(out->enum_bases);
+        memset(out, 0, sizeof(*out));
         return false;
     }
     out->text = norm;
+
     out->len = norm_len;
     out->xml_line = a.map.v;
     out->line_count = a.map.n;
@@ -1379,6 +1462,7 @@ void cbm_twincat_unit_free(CBMTwinCATUnit *unit) {
     }
     free(unit->text);
     free(unit->xml_line);
+    free(unit->enum_bases);
     memset(unit, 0, sizeof(*unit));
 }
 

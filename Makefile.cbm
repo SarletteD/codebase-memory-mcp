@@ -370,6 +370,7 @@ PIPELINE_SRCS = \
     src/pipeline/pass_usages.c \
     src/pipeline/pass_semantic.c \
     src/pipeline/twincat_ns.c \
+    src/pipeline/st_members.c \
     src/pipeline/pass_tests.c \
     src/pipeline/pass_githistory.c \
     src/pipeline/pass_gitdiff.c \

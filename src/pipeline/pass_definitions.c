@@ -288,7 +288,18 @@ static void build_def_props(char *buf, size_t bufsize, const CBMDefinition *def)
     append_json_string(buf, bufsize, &pos, "signature", def->signature);
     append_json_string(buf, bufsize, &pos, "return_type", def->return_type);
     append_json_string(buf, bufsize, &pos, "parent_class", def->parent_class);
+    /* Enum member (Structured Text TYPE ... : ( ... )): its integer value,
+     * appended whole or not at all (room for the closing brace + NUL). */
+    if (def->has_enum_value) {
+        char ev[CBM_SZ_64];
+        int w = snprintf(ev, sizeof(ev), ",\"enum_value\":%lld", (long long)def->enum_value);
+        if (w > 0 && (size_t)w < sizeof(ev) && pos + (size_t)w + 2 < bufsize) {
+            memcpy(buf + pos, ev, (size_t)w + 1);
+            pos += (size_t)w;
+        }
+    }
     append_json_str_array(buf, bufsize, &pos, "decorators", def->decorators);
+
     append_json_str_array(buf, bufsize, &pos, "base_classes", def->base_classes);
     append_json_str_array(buf, bufsize, &pos, "param_names", def->param_names);
     append_json_str_array(buf, bufsize, &pos, "param_types", def->param_types);
@@ -334,7 +345,9 @@ static void process_def(cbm_pipeline_ctx_t *ctx, const CBMDefinition *def, const
      * field resolution), Variable/Field (READS/WRITES resolution), and Table/View
      * (SQL FROM/JOIN lineage). pass_parallel.c and pipeline_incremental.c seed
      * through the same predicate, so the three registries cannot diverge. */
-    if (node_id > 0 && cbm_label_is_registry_symbol(def->label)) {
+    if (node_id > 0 && cbm_label_is_registry_symbol(def->label) &&
+        !cbm_st_is_dut_member_qn(ctx->gbuf, def->label, def->qualified_name)) {
+
         cbm_registry_add(ctx->registry, def->name, def->qualified_name, def->label);
     }
     char *file_qn = cbm_pipeline_fqn_compute(ctx->project_name, rel, "__file__");
@@ -347,6 +360,15 @@ static void process_def(cbm_pipeline_ctx_t *ctx, const CBMDefinition *def, const
         const cbm_gbuf_node_t *parent = cbm_gbuf_find_by_qn(ctx->gbuf, def->parent_class);
         if (parent && node_id > 0) {
             cbm_gbuf_insert_edge(ctx->gbuf, parent->id, node_id, "DEFINES_METHOD", "{}");
+        }
+    }
+    /* A member of a Type (Structured Text enum member / struct field) hangs off
+     * its Type with DEFINES, mirroring File -DEFINES-> definition. Fields of a
+     * Class keep their parent_class property only, as before. */
+    if (def->parent_class && def->label && strcmp(def->label, "Field") == 0) {
+        const cbm_gbuf_node_t *parent = cbm_gbuf_find_by_qn(ctx->gbuf, def->parent_class);
+        if (parent && node_id > 0 && parent->label && strcmp(parent->label, "Type") == 0) {
+            cbm_gbuf_insert_edge(ctx->gbuf, parent->id, node_id, "DEFINES", "{}");
         }
     }
 }

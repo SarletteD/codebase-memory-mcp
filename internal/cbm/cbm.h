@@ -225,6 +225,9 @@ typedef struct {
     bool is_abstract;
     bool is_test;
     bool is_entry_point;
+    bool has_enum_value;   // Field is an enum member whose integer value is known
+    bool is_enum_member;   // Field is a member of an enumeration TYPE (value may be unknown)
+    int64_t enum_value;    // explicit (":= 10") or implicit (previous + 1, first 0) value
     const char *structural_profile; // AST structural profile (arena-allocated) or NULL
     const char *body_tokens; // space-separated raw identifier tokens from body (arena) or NULL
     /* Rust only: raw trait path from the exact `impl Trait for Type` block
@@ -304,6 +307,12 @@ typedef struct {
                                           // (Go x.f — field_identifier). The extractor strips
                                           // the receiver, so this is the only surviving record
                                           // of selector shape (#1962). Default false.
+    const char *member_qualifier;         // Structured Text: dotted receiver of a member token
+                                          // ("E_State", "Vnd_Core.E_AlarmState", "_par.Inner");
+                                          // NULL unless the receiver is a plain identifier chain
+    const char *qualifier_type;           // Structured Text: declared type of that receiver's head
+                                          // when a VAR block of the enclosing POU declares it
+    uint32_t start_line;                  // 1-based source line of the token (0 = unknown)
 } CBMUsage;
 
 typedef struct {

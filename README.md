@@ -837,6 +837,33 @@ The result is a knowledge graph accurate enough to drive `trace_path` across pac
 
 Also supported (not yet benchmarked): Ada, Agda, Apex, Assembly (NASM), Astro, AWK, Beancount, BibTeX, Bicep, Bitbake, Blade, Cairo, Cap'n Proto, Clojure, CMake, COBOL, Common Lisp, Crystal, CSV, CUDA, D, Devicetree, Diff, .env, Elm, Emacs Lisp, F#, Fennel, Fish, FORM, Fortran, FunC, GDScript, .gitattributes, .gitignore, Gleam, GLSL, GN, Go module, Go template, GraphQL, Hare, HLSL, Hyprlang, INI, ISPC, Janet, Jinja2, JSDoc, JSON, JSON5, Jsonnet, Julia, Just, Kconfig, KDL, Lean 4, Linker Script, Liquid, LLVM IR, Luau, Magma, Makefile, Markdown, MATLAB, Mermaid, Meson, Move, Nickel, Nim, Nix, Odin, Pascal, Pkl, PO (gettext), Pony, PowerShell, Prisma, .properties, Protobuf, Puppet, PureScript, Racket, Regex, requirements.txt, ReScript, RON, reStructuredText, Scheme, Slang, Smali, Smithy, Solidity, SOQL, SOSL, Squirrel, SSH config, Starlark, Svelte, Sway, SystemVerilog, TableGen, Tcl, Teal, Templ, Thrift, TLA+, Typst, Verilog, VHDL, Vim script, Vue, WGSL, WIT, Wolfram, XML, Zsh.
 
+### Structured Text / TwinCAT (fork)
+
+This fork adds IEC 61131-3 Structured Text (`.st`) and Beckhoff TwinCAT object XML
+(`.TcPOU`, `.TcDUT`, `.TcGVL`, `.TcIO`, transcoded to ST before parsing). Namespace-qualified
+bases (`Vnd_Core.FB_Base`) resolve through the `.plcproj` placeholder chain of the referencing
+library. DUT internals are first-class so an enum or struct refactoring can be planned from the
+graph alone:
+
+- **Enum members, struct fields and union members are `Field` nodes** under their `Type`
+  (`Type -[:DEFINES]-> Field`, `parent_class` = the type's qualified name). An enum member carries
+  `enum_value` (explicit `:= 10` or implicit previous + 1, first 0) and `return_type` = the enum's
+  base type (`UINT`, …; `INT` when absent). A struct/union field's `return_type` is the declared
+  type text as written (`Vnd_Core.I_ParameterInteger`, `ARRAY [0..3] OF INT`).
+- **Member-level `USAGE` edges.** `E_State.CLOSE` and `Vnd_Core.E_AlarmState.OFF` yield a `USAGE`
+  from the enclosing Method/Module to the member `Field` in addition to the edge to the `Type`.
+  `_par.Inner.Depth` resolves through the receiver's declared type (a VAR block of the same POU)
+  and then Field → `return_type` → Type per hop. Every hop is exact; an unknown member, an index
+  or dereference in the chain, or an unresolvable type yields no edge, and a bare member name
+  (`x := CLOSE`) never binds a DUT member by registry uniqueness.
+- **Occurrence data on ST `USAGE` edges**: `line` (first occurrence in the source node) and
+  `count` (occurrences in that node), type-level and member-level alike. Edges stay deduplicated
+  to one per (source, target); `count` carries the multiplicity.
+
+Not covered: member names are matched with their exact spelling, `CASE … OF` labels have no
+special semantics beyond the member reference, and types that live only in an installed
+`.library` (not in the indexed tree) resolve to nothing.
+
 ## Architecture
 
 ```

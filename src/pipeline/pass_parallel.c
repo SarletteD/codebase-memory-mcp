@@ -513,7 +513,18 @@ static void build_def_props(char *buf, size_t bufsize, const CBMDefinition *def)
     append_json_string(buf, bufsize, &pos, "signature", def->signature);
     append_json_string(buf, bufsize, &pos, "return_type", def->return_type);
     append_json_string(buf, bufsize, &pos, "parent_class", def->parent_class);
+    /* Enum member (Structured Text TYPE ... : ( ... )): its integer value,
+     * appended whole or not at all (room for the closing brace + NUL). */
+    if (def->has_enum_value) {
+        char ev[CBM_SZ_64];
+        int w = snprintf(ev, sizeof(ev), ",\"enum_value\":%lld", (long long)def->enum_value);
+        if (w > 0 && (size_t)w < sizeof(ev) && pos + (size_t)w + 2 < bufsize) {
+            memcpy(buf + pos, ev, (size_t)w + 1);
+            pos += (size_t)w;
+        }
+    }
     append_json_str_array(buf, bufsize, &pos, "decorators", def->decorators);
+
     append_json_str_array(buf, bufsize, &pos, "base_classes", def->base_classes);
     append_json_str_array(buf, bufsize, &pos, "param_names", def->param_names);
     append_json_str_array(buf, bufsize, &pos, "param_types", def->param_types);
@@ -1255,9 +1266,11 @@ static int register_and_link_def(cbm_pipeline_ctx_t *ctx, const CBMDefinition *d
     }
     /* Registry membership is defined ONCE by cbm_label_is_registry_symbol
      * (helpers.c) — see pass_definitions.c for the per-label rationale. */
-    if (cbm_label_is_registry_symbol(def->label)) {
+    if (cbm_label_is_registry_symbol(def->label) &&
+        !cbm_st_is_dut_member_qn(ctx->gbuf, def->label, def->qualified_name)) {
         cbm_registry_add(ctx->registry, def->name, def->qualified_name, def->label);
         (*reg_entries)++;
+
     }
     char *file_qn = cbm_pipeline_fqn_compute(ctx->project_name, rel, "__file__");
     const cbm_gbuf_node_t *file_node = cbm_gbuf_find_by_qn(ctx->gbuf, file_qn);
@@ -1271,6 +1284,15 @@ static int register_and_link_def(cbm_pipeline_ctx_t *ctx, const CBMDefinition *d
         const cbm_gbuf_node_t *parent = cbm_gbuf_find_by_qn(ctx->gbuf, def->parent_class);
         if (parent && def_node) {
             cbm_gbuf_insert_edge(ctx->gbuf, parent->id, def_node->id, "DEFINES_METHOD", "{}");
+        }
+    }
+    /* Type -DEFINES-> Field for Structured Text enum members / struct fields
+     * (twin of pass_definitions.c::process_def). */
+    if (def->parent_class && strcmp(def->label, "Field") == 0) {
+        const cbm_gbuf_node_t *parent = cbm_gbuf_find_by_qn(ctx->gbuf, def->parent_class);
+        if (parent && def_node && parent->label && strcmp(parent->label, "Type") == 0) {
+            cbm_gbuf_insert_edge(ctx->gbuf, parent->id, def_node->id, "DEFINES", "{}");
+            edges++;
         }
     }
     return edges;
@@ -2670,6 +2692,10 @@ static void resolve_file_usages(resolve_ctx_t *rc, resolve_worker_state_t *ws,
     cbm_pipeline_lsp_reference_index_t reference_index = {0};
     bool reference_index_ready =
         cbm_pipeline_lsp_reference_index_build(&result->resolved_calls, &reference_index);
+    /* Structured Text: member resolution + occurrence aggregation (st_members.c);
+     * mirrors the sequential twin in pass_usages.c. */
+    bool st = cbm_st_lang(lang);
+    cbm_st_usage_agg_t *agg = st ? cbm_st_usage_agg_new() : NULL;
     for (int u = 0; u < result->usages.count; u++) {
         CBMUsage *usage = &result->usages.items[u];
         if (!usage->ref_name) {
@@ -2678,6 +2704,15 @@ static void resolve_file_usages(resolve_ctx_t *rc, resolve_worker_state_t *ws,
         const cbm_gbuf_node_t *src =
             find_source_node(rc->main_gbuf, rc->project_name, rel, usage->enclosing_func_qn);
         if (!src) {
+            continue;
+        }
+        if (st) {
+            cbm_st_usage_agg_add(agg, src,
+                                 cbm_st_resolve_plain(rc->registry, rc->main_gbuf, lang, module_qn,
+                                                      imp_keys, imp_vals, imp_count, usage),
+                                 cbm_st_resolve_member(rc->tc_ns, rc->registry, rc->main_gbuf, rel,
+                                                       lang, usage),
+                                 usage);
             continue;
         }
         const cbm_gbuf_node_t *tgt = NULL;
@@ -2757,8 +2792,10 @@ static void resolve_file_usages(resolve_ctx_t *rc, resolve_worker_state_t *ws,
         cbm_gbuf_insert_edge(ws->local_edge_buf, src->id, tgt->id, edge_type, uprops);
         ws->usages_resolved++;
     }
+    ws->usages_resolved += cbm_st_usage_agg_flush(agg, ws->local_edge_buf);
     cbm_pipeline_lsp_reference_index_free(&reference_index);
 }
+
 
 /* Resolve throws/raises for one file. */
 static void resolve_file_throws(resolve_ctx_t *rc, resolve_worker_state_t *ws,

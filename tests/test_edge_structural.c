@@ -847,6 +847,670 @@ TEST(es_twincat_qualified_base_in_library_parallel) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
+ * TwinCAT DUT internals: enum members / struct fields as Field nodes,
+ * member-level USAGE edges, and line/count occurrence data on USAGE.
+ *
+ * Two libraries: LibM (namespace Ns_M, holds E_Alarm + I_ParInt) and LibApp,
+ * which references LibM and holds the DUTs and FB_Drain. Line numbers in the
+ * literals below are the XML lines the assertions compare against.
+ * ══════════════════════════════════════════════════════════════════ */
+
+static const char ES_TC_DUT[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                                "<TcPlcObject Version=\"1.1.0.1\">\n"
+                                "  <DUT Name=\"%s\" Id=\"{1}\">\n"
+                                "    <Declaration><![CDATA[%s]]></Declaration>\n"
+                                "  </DUT>\n"
+                                "</TcPlcObject>\n";
+
+/* Declaration text starts on XML line 4. */
+static const char ES_TC_ENUM_DECL[] = "{attribute 'qualified_only'}\n"    /* 4 */
+                                      "{attribute 'strict'}\n"            /* 5 */
+                                      "TYPE E_ValveState :\n"             /* 6 */
+                                      "(\n"                               /* 7 */
+                                      "\tONE_TIME_INIT := 0,\n"           /* 8 */
+                                      "\tINIT,\n"                         /* 9 */
+                                      "\t(* comment between members *)\n" /* 10 */
+                                      "\tOPEN := 2,\n"                    /* 11 */
+                                      "\tCLOSE,\n"                        /* 12 */
+                                      "\tERROR_LIMIT := 10\n"             /* 13 */
+                                      ") UINT;\n"                         /* 14 */
+                                      "END_TYPE\n";                       /* 15 */
+
+static const char ES_TC_STRUCT_DECL[] = "TYPE T_Par :\n"                      /* 4 */
+                                        "STRUCT\n"                            /* 5 */
+                                        "\tNumberOfPulses : Ns_M.I_ParInt;\n" /* 6 */
+                                        "\tPulsesOnTime : Ns_M.I_ParInt;\n"   /* 7 */
+                                        "\tInner : T_Inner;\n"                /* 8 */
+                                        "\tArr : ARRAY [0..3] OF INT;\n"      /* 9 */
+                                        "END_STRUCT\n"                        /* 10 */
+                                        "END_TYPE\n";                         /* 11 */
+
+static const char ES_TC_INNER_DECL[] = "TYPE T_Inner :\n"
+                                       "STRUCT\n"
+                                       "\tDepth : INT;\n"
+                                       "END_STRUCT\n"
+                                       "END_TYPE\n";
+
+static const char ES_TC_UNION_DECL[] = "TYPE U_Raw :\n"
+                                       "UNION\n"
+                                       "\tWord : WORD;\n"
+                                       "\tBytes : ARRAY [0..1] OF BYTE;\n"
+                                       "END_UNION\n"
+                                       "END_TYPE\n";
+
+static const char ES_TC_ALARM_DECL[] = "{attribute 'qualified_only'}\n"
+                                       "TYPE E_Alarm :\n"
+                                       "(\n"
+                                       "\tOFF := 0,\n"
+                                       "\tACTIVE\n"
+                                       ") UINT;\n"
+                                       "END_TYPE\n";
+
+static const char ES_TC_FB_DRAIN[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"                /* 1 */
+    "<TcPlcObject Version=\"1.1.0.1\">\n"                         /* 2 */
+    "  <POU Name=\"FB_Drain\" Id=\"{1}\" SpecialFunc=\"None\">\n" /* 3 */
+    "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Drain\n"         /* 4 */
+    "VAR_INPUT\n"                                                 /* 5 */
+    "\tinPar : T_Par;\n"                                          /* 6 */
+    "END_VAR\n"                                                   /* 7 */
+    "VAR\n"                                                       /* 8 */
+    "\t_state : E_ValveState;\n"                                  /* 9 */
+    "\t_par : T_Par;\n"                                           /* 10 */
+    "END_VAR\n"                                                   /* 11 */
+    "]]></Declaration>\n"                                         /* 12 */
+    "    <Implementation>\n"                                      /* 13 */
+    "      <ST><![CDATA[stateMachine();]]></ST>\n"                /* 14 */
+    "    </Implementation>\n"                                     /* 15 */
+    "    <Method Name=\"stateMachine\" Id=\"{2}\">\n"             /* 16 */
+    "      <Declaration><![CDATA[METHOD stateMachine : BOOL\n"    /* 17 */
+    "VAR\n"                                                       /* 18 */
+    "\tlocal : T_Inner;\n"                                        /* 19 */
+    "\talarm : Ns_M.E_Alarm;\n"                                   /* 20 */
+    "\tx : INT;\n"                                                /* 21 */
+    "\ty : INT;\n"                                                /* 22 */
+    "END_VAR\n"                                                   /* 23 */
+    "]]></Declaration>\n"                                         /* 24 */
+    "      <Implementation>\n"                                    /* 25 */
+    "        <ST><![CDATA[CASE _state OF\n"                       /* 26 */
+    "\tE_ValveState.OPEN:\n"                                      /* 27 */
+    "\t\t_par.NumberOfPulses.Value := 1;\n"                       /* 28 */
+    "\t\tIF inPar.Inner.Depth > 0 THEN\n"                         /* 29 */
+    "\t\t\tlocal.Depth := 2;\n"                                   /* 30 */
+    "\t\tEND_IF\n"                                                /* 31 */
+    "\tE_ValveState.CLOSE:\n"                                     /* 32 */
+    "\t\t_state := E_ValveState.CLOSE;\n"                         /* 33 */
+    "END_CASE\n"                                                  /* 34 */
+    "IF _state = E_ValveState.CLOSE THEN\n"                       /* 35 */
+    "\talarm := Ns_M.E_Alarm.OFF;\n"                              /* 36 */
+    "\tx := E_ValveState.UNKNOWN_MEMBER;\n"                       /* 37 */
+    "\ty := CLOSE;\n"                                             /* 38 */
+    "END_IF]]></ST>\n"                                            /* 39 */
+    "      </Implementation>\n"                                   /* 40 */
+    "    </Method>\n"                                             /* 41 */
+    "    <Method Name=\"Test_Close\" Id=\"{3}\">\n"               /* 42 */
+    "      <Declaration><![CDATA[METHOD Test_Close : BOOL\n"      /* 43 */
+    "]]></Declaration>\n"                                         /* 44 */
+    "      <Implementation>\n"                                    /* 45 */
+    "        <ST><![CDATA[AssertEquals_UINT(Expected := E_ValveState.CLOSE, Actual := "
+    "_state);]]></ST>\n" /* 46 */
+    "      </Implementation>\n" /* 47 */
+    "    </Method>\n"           /* 48 */
+    "  </POU>\n"                /* 49 */
+    "</TcPlcObject>\n";         /* 50 */
+
+static const char ES_TC_LIBM_PROJ[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+    "<Project DefaultTargets=\"Build\" "
+    "xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">\n"
+    "  <PropertyGroup>\n"
+    "    <Name>LibM</Name>\n"
+    "    <Title>LibM</Title>\n"
+    "    <DefaultNamespace>Ns_M</DefaultNamespace>\n"
+    "  </PropertyGroup>\n"
+    "</Project>\n";
+
+static const char ES_TC_LIBAPP_PROJ[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+    "<Project DefaultTargets=\"Build\" "
+    "xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">\n"
+    "  <PropertyGroup>\n"
+    "    <Name>LibApp</Name>\n"
+    "    <Title>LibApp</Title>\n"
+    "  </PropertyGroup>\n"
+    "  <ItemGroup>\n"
+    "    <PlaceholderReference Include=\"LibM\">\n"
+    "      <DefaultResolution>LibM, * (Vendor)</DefaultResolution>\n"
+    "      <Namespace>Ns_M</Namespace>\n"
+    "    </PlaceholderReference>\n"
+    "  </ItemGroup>\n"
+    "</Project>\n";
+
+/* A same-named enum in the OTHER library: `E_ValveState.CLOSE` in LibApp must
+ * bind LibApp's enum and never this one, and the bare name CLOSE becomes
+ * ambiguous project-wide (as it is in real projects). */
+static const char ES_TC_DUP_ENUM_DECL[] = "{attribute 'qualified_only'}\n"
+                                          "TYPE E_ValveState :\n"
+                                          "(\n"
+                                          "\tOPEN := 20,\n"
+                                          "\tCLOSE := 21\n"
+                                          ") UINT;\n"
+                                          "END_TYPE\n";
+
+/* Cross-language decoy: the only type named T_Foreign is a C struct. An ST
+ * variable of that (undeclared in ST) type must resolve no member. */
+static const char ES_TC_FOREIGN_C[] = "struct T_Foreign {\n    int Depth;\n};\n";
+
+static const char ES_TC_FB_FOREIGN[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                                       "<TcPlcObject Version=\"1.1.0.1\">\n"
+                                       "  <POU Name=\"FB_Foreign\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+                                       "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Foreign\n"
+                                       "VAR\n"
+                                       "\tforeign : T_Foreign;\n"
+                                       "END_VAR\n"
+                                       "]]></Declaration>\n"
+                                       "    <Implementation>\n"
+                                       "      <ST><![CDATA[foreign.Depth := 1;]]></ST>\n"
+                                       "    </Implementation>\n"
+                                       "  </POU>\n"
+                                       "</TcPlcObject>\n";
+
+/* Same-file preference: two plain .st files in one library both declare T_Loc;
+ * a reference in a.st binds a.st's T_Loc, never b.st's. */
+static const char ES_TC_PLAIN_A[] = "TYPE T_Loc : STRUCT Depth : INT; END_STRUCT END_TYPE\n"
+                                    "FUNCTION_BLOCK FB_Loc\n"
+                                    "VAR\n"
+                                    "\tv : T_Loc;\n"
+                                    "END_VAR\n"
+                                    "v.Depth := 1;\n"
+                                    "END_FUNCTION_BLOCK\n";
+static const char ES_TC_PLAIN_B[] = "TYPE T_Loc : STRUCT Depth : INT; END_STRUCT END_TYPE\n";
+
+#define ES_TCM_FILES (14 + ES_TC_PAD_FILES)
+#define ES_TCM_SET_MAX 64
+#define ES_TCM_ENTRY 256
+
+typedef struct {
+    char names[ES_TCM_FILES][ES_TC_PATH];
+    char bodies[ES_TCM_FILES][2048];
+    ES_LangFile files[ES_TCM_FILES];
+    int n;
+} ES_TcMemberFixture;
+
+/* Build the DUT-internals fixture; padded past the parallel threshold when asked. */
+static void es_tcm_build(ES_TcMemberFixture *fx, bool parallel, bool dup_enum) {
+    fx->n = 0;
+    if (dup_enum) {
+        snprintf(fx->bodies[fx->n], sizeof(fx->bodies[fx->n]), ES_TC_DUT, "E_ValveState",
+                 ES_TC_DUP_ENUM_DECL);
+        fx->files[fx->n] = (ES_LangFile){"LibM/DUTs/E_ValveState.TcDUT", fx->bodies[fx->n]};
+        fx->n++;
+        fx->files[fx->n++] = (ES_LangFile){"LibApp/native/foreign.c", ES_TC_FOREIGN_C};
+        fx->files[fx->n++] = (ES_LangFile){"LibApp/POUs/FB_Foreign.TcPOU", ES_TC_FB_FOREIGN};
+        fx->files[fx->n++] = (ES_LangFile){"LibApp/Plain/a.st", ES_TC_PLAIN_A};
+        fx->files[fx->n++] = (ES_LangFile){"LibApp/Plain/b.st", ES_TC_PLAIN_B};
+    }
+    struct {
+        const char *path;
+        const char *name;
+        const char *decl;
+    } duts[] = {
+        {"LibApp/DUTs/E_ValveState.TcDUT", "E_ValveState", ES_TC_ENUM_DECL},
+        {"LibApp/DUTs/T_Par.TcDUT", "T_Par", ES_TC_STRUCT_DECL},
+        {"LibApp/DUTs/T_Inner.TcDUT", "T_Inner", ES_TC_INNER_DECL},
+        {"LibApp/DUTs/U_Raw.TcDUT", "U_Raw", ES_TC_UNION_DECL},
+        {"LibM/DUTs/E_Alarm.TcDUT", "E_Alarm", ES_TC_ALARM_DECL},
+    };
+    fx->files[fx->n++] = (ES_LangFile){"LibM/LibM.plcproj", ES_TC_LIBM_PROJ};
+    fx->files[fx->n++] = (ES_LangFile){"LibApp/LibApp.plcproj", ES_TC_LIBAPP_PROJ};
+    for (size_t i = 0; i < sizeof(duts) / sizeof(duts[0]); i++) {
+        snprintf(fx->bodies[fx->n], sizeof(fx->bodies[fx->n]), ES_TC_DUT, duts[i].name,
+                 duts[i].decl);
+        fx->files[fx->n] = (ES_LangFile){duts[i].path, fx->bodies[fx->n]};
+        fx->n++;
+    }
+    snprintf(fx->bodies[fx->n], sizeof(fx->bodies[fx->n]), ES_TC_ITF, "I_ParInt",
+             "INTERFACE I_ParInt");
+    fx->files[fx->n] = (ES_LangFile){"LibM/POUs/I_ParInt.TcIO", fx->bodies[fx->n]};
+    fx->n++;
+    fx->files[fx->n++] = (ES_LangFile){"LibApp/POUs/FB_Drain.TcPOU", ES_TC_FB_DRAIN};
+    for (int i = 0; parallel && i < ES_TC_PAD_FILES; i++) {
+        char pad[32];
+        char header[64];
+        snprintf(pad, sizeof(pad), "FB_Pad%02d", i);
+        snprintf(header, sizeof(header), "FUNCTION_BLOCK %s", pad);
+        snprintf(fx->names[fx->n], ES_TC_PATH, "LibApp/Pad/%s.TcPOU", pad);
+        snprintf(fx->bodies[fx->n], sizeof(fx->bodies[fx->n]), ES_TC_POU, pad, header);
+        fx->files[fx->n] = (ES_LangFile){fx->names[fx->n], fx->bodies[fx->n]};
+        fx->n++;
+    }
+}
+
+static cbm_store_t *es_tcm_index(ES_LangProj *lp, ES_TcMemberFixture *fx, bool parallel,
+                                 bool dup_enum) {
+    es_tcm_build(fx, parallel, dup_enum);
+    const char *old_workers = getenv("CBM_WORKERS");
+    char *saved_workers = old_workers ? strdup(old_workers) : NULL;
+    if (parallel) {
+        cbm_setenv("CBM_WORKERS", "4", 1);
+    }
+    cbm_store_t *store = es_lang_index_files(lp, fx->files, fx->n);
+    if (parallel) {
+        if (saved_workers) {
+            cbm_setenv("CBM_WORKERS", saved_workers, 1);
+        } else {
+            cbm_unsetenv("CBM_WORKERS");
+        }
+    }
+    free(saved_workers);
+    return store;
+}
+
+static int es_tcm_cmp_str(const void *a, const void *b) {
+    return strcmp((const char *)a, (const char *)b);
+}
+
+/* Every USAGE edge landing on a Type node, as sorted "src_label src_name@src_file -> target"
+ * entries. Returns the entry count, or -1 on a store error. */
+static int es_tcm_type_usage_set(cbm_store_t *store, const char *project,
+                                 char out[][ES_TCM_ENTRY], int max) {
+    cbm_edge_t *edges = NULL;
+    int count = 0;
+    if (cbm_store_find_edges_by_type(store, project, "USAGE", &edges, &count) != CBM_STORE_OK) {
+        return -1;
+    }
+    int n = 0;
+    for (int i = 0; i < count && n < max; i++) {
+        cbm_node_t src;
+        cbm_node_t tgt;
+        memset(&src, 0, sizeof(src));
+        memset(&tgt, 0, sizeof(tgt));
+        if (cbm_store_find_node_by_id(store, edges[i].target_id, &tgt) != CBM_STORE_OK) {
+            continue;
+        }
+        if (tgt.label && strcmp(tgt.label, "Type") == 0 &&
+            cbm_store_find_node_by_id(store, edges[i].source_id, &src) == CBM_STORE_OK) {
+            snprintf(out[n++], ES_TCM_ENTRY, "%s %s@%s -> %s", src.label, src.name, src.file_path,
+                     tgt.name);
+            cbm_node_free_fields(&src);
+        }
+        cbm_node_free_fields(&tgt);
+    }
+    cbm_store_free_edges(edges, count);
+    qsort(out, (size_t)n, ES_TCM_ENTRY, es_tcm_cmp_str);
+    return n;
+}
+
+/* Regression guard: the type-level USAGE edge set of the fixture, snapshotted
+ * from the build BEFORE DUT internals became nodes. Member-level edges land on
+ * Field nodes and are therefore invisible here by construction. */
+TEST(es_twincat_type_usage_edge_set_unchanged) {
+    ES_LangProj lp;
+    ES_TcMemberFixture *fx = calloc(1, sizeof(*fx));
+    ASSERT_NOT_NULL(fx);
+    cbm_store_t *store = es_tcm_index(&lp, fx, false, false);
+    ASSERT_NOT_NULL(store);
+    static char got[ES_TCM_SET_MAX][ES_TCM_ENTRY];
+    int n = es_tcm_type_usage_set(store, lp.project, got, ES_TCM_SET_MAX);
+    es_lang_cleanup(&lp, store);
+    free(fx);
+    /* Snapshot taken 2026-09-16 from the pre-change build (sorted). */
+    static const char *const EXPECTED[] = {
+        "Method Test_Close@LibApp/POUs/FB_Drain.TcPOU -> E_ValveState",
+        "Method stateMachine@LibApp/POUs/FB_Drain.TcPOU -> E_Alarm",
+        "Method stateMachine@LibApp/POUs/FB_Drain.TcPOU -> E_ValveState",
+        "Method stateMachine@LibApp/POUs/FB_Drain.TcPOU -> T_Inner",
+        "Module LibApp/DUTs/T_Par.TcDUT@LibApp/DUTs/T_Par.TcDUT -> T_Inner",
+        "Module LibApp/POUs/FB_Drain.TcPOU@LibApp/POUs/FB_Drain.TcPOU -> E_ValveState",
+        "Module LibApp/POUs/FB_Drain.TcPOU@LibApp/POUs/FB_Drain.TcPOU -> T_Par",
+    };
+    const int expected_n = (int)(sizeof(EXPECTED) / sizeof(EXPECTED[0]));
+    int mismatch = n != expected_n;
+    for (int i = 0; i < n && i < expected_n; i++) {
+        mismatch |= strcmp(got[i], EXPECTED[i]) != 0;
+    }
+    if (mismatch) {
+        fprintf(stderr, "  [ES-TCM] type-level USAGE set changed (%d entries, expected %d):\n", n,
+                expected_n);
+        for (int i = 0; i < n; i++) {
+            fprintf(stderr, "    got:      %s\n", got[i]);
+        }
+    }
+    ASSERT_FALSE(mismatch);
+    PASS();
+}
+
+/* The node `name` with `label` defined in `file`; 0 when absent or ambiguous. */
+static int64_t es_tcm_node_id(cbm_store_t *store, const char *project, const char *label,
+                              const char *name, const char *file) {
+    cbm_node_t *nodes = NULL;
+    int count = 0;
+    int64_t id = 0;
+    int hits = 0;
+    if (cbm_store_find_nodes_by_name(store, project, name, &nodes, &count) != CBM_STORE_OK) {
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        if (nodes[i].label && strcmp(nodes[i].label, label) == 0 && nodes[i].file_path &&
+            strcmp(nodes[i].file_path, file) == 0) {
+            id = nodes[i].id;
+            hits++;
+        }
+    }
+    cbm_store_free_nodes(nodes, count);
+    return hits == 1 ? id : 0;
+}
+
+/* Copy the properties JSON of the one `type` edge src -> tgt into `out`.
+ * Returns 1 when exactly one such edge exists, 0 when none, -1 when several. */
+static int es_tcm_edge_props(cbm_store_t *store, int64_t src, int64_t tgt, const char *type,
+                             char *out, size_t out_size) {
+    cbm_edge_t *edges = NULL;
+    int count = 0;
+    int hits = 0;
+    out[0] = '\0';
+    if (src == 0 || tgt == 0 ||
+        cbm_store_find_edges_by_source_type(store, src, type, &edges, &count) != CBM_STORE_OK) {
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        if (edges[i].target_id == tgt) {
+            snprintf(out, out_size, "%s",
+                     edges[i].properties_json ? edges[i].properties_json : "{}");
+            hits++;
+        }
+    }
+    cbm_store_free_edges(edges, count);
+    return hits > 1 ? -1 : hits;
+}
+
+/* Number of `type` edges landing on `tgt`. */
+static int es_tcm_inbound(cbm_store_t *store, int64_t tgt, const char *type) {
+    cbm_edge_t *edges = NULL;
+    int count = 0;
+    if (tgt == 0 ||
+        cbm_store_find_edges_by_target_type(store, tgt, type, &edges, &count) != CBM_STORE_OK) {
+        return -1;
+    }
+    cbm_store_free_edges(edges, count);
+    return count;
+}
+
+/* Expect one USAGE edge src -> tgt whose properties carry the given line and count. */
+static int es_tcm_expect_usage(cbm_store_t *store, int64_t src, int64_t tgt, const char *what,
+                               int line, int count) {
+    char props[512];
+    char want_line[32];
+    char want_count[32];
+    int n = es_tcm_edge_props(store, src, tgt, "USAGE", props, sizeof(props));
+    snprintf(want_line, sizeof(want_line), "\"line\":%d", line);
+    snprintf(want_count, sizeof(want_count), "\"count\":%d", count);
+    int ok = n == 1 && strstr(props, want_line) && strstr(props, want_count);
+    if (!ok) {
+        fprintf(stderr, "  [ES-TCM] USAGE %s: edges=%d props=%s (want line %d, count %d)\n", what,
+                n, props, line, count);
+    }
+    return ok;
+}
+
+#define ES_TCM_ENUM_FILE "LibApp/DUTs/E_ValveState.TcDUT"
+#define ES_TCM_PAR_FILE "LibApp/DUTs/T_Par.TcDUT"
+#define ES_TCM_INNER_FILE "LibApp/DUTs/T_Inner.TcDUT"
+#define ES_TCM_UNION_FILE "LibApp/DUTs/U_Raw.TcDUT"
+#define ES_TCM_ALARM_FILE "LibM/DUTs/E_Alarm.TcDUT"
+#define ES_TCM_FB_FILE "LibApp/POUs/FB_Drain.TcPOU"
+
+/* Enum members, struct fields and union members are Field nodes under their
+ * Type (DEFINES), with enum_value / return_type / parent_class properties. */
+TEST(es_twincat_dut_members_are_fields_under_type) {
+    ES_LangProj lp;
+    ES_TcMemberFixture *fx = calloc(1, sizeof(*fx));
+    ASSERT_NOT_NULL(fx);
+    cbm_store_t *store = es_tcm_index(&lp, fx, false, false);
+    ASSERT_NOT_NULL(store);
+    int failed = 0;
+
+    int64_t enum_id = es_tcm_node_id(store, lp.project, "Type", "E_ValveState", ES_TCM_ENUM_FILE);
+    failed += enum_id == 0;
+    struct {
+        const char *name;
+        const char *value;
+        int line;
+    } members[] = {{"ONE_TIME_INIT", "\"enum_value\":0", 8}, {"INIT", "\"enum_value\":1", 9},
+                   {"OPEN", "\"enum_value\":2", 11},         {"CLOSE", "\"enum_value\":3", 12},
+                   {"ERROR_LIMIT", "\"enum_value\":10", 13}};
+    for (size_t i = 0; i < sizeof(members) / sizeof(members[0]); i++) {
+        int64_t fid = es_tcm_node_id(store, lp.project, "Field", members[i].name, ES_TCM_ENUM_FILE);
+        cbm_node_t f;
+        memset(&f, 0, sizeof(f));
+        int ok = fid != 0 && cbm_store_find_node_by_id(store, fid, &f) == CBM_STORE_OK;
+        if (ok) {
+            char parent[512];
+            cbm_node_t t;
+            memset(&t, 0, sizeof(t));
+            cbm_store_find_node_by_id(store, enum_id, &t);
+            snprintf(parent, sizeof(parent), "\"parent_class\":\"%s\"",
+                     t.qualified_name ? t.qualified_name : "?");
+            ok = f.properties_json && strstr(f.properties_json, members[i].value) &&
+                 strstr(f.properties_json, "\"return_type\":\"UINT\"") &&
+                 strstr(f.properties_json, parent) && f.start_line == members[i].line;
+            if (!ok) {
+                fprintf(stderr, "  [ES-TCM] Field %s: line=%d props=%s\n", members[i].name,
+                        f.start_line, f.properties_json ? f.properties_json : "(null)");
+            }
+            char props[64];
+            int e = es_tcm_edge_props(store, enum_id, fid, "DEFINES", props, sizeof(props));
+            if (e != 1) {
+                fprintf(stderr, "  [ES-TCM] Type -DEFINES-> %s: %d edge(s)\n", members[i].name, e);
+                ok = 0;
+            }
+            cbm_node_free_fields(&t);
+            cbm_node_free_fields(&f);
+        } else {
+            fprintf(stderr, "  [ES-TCM] Field %s missing\n", members[i].name);
+        }
+        failed += !ok;
+    }
+    /* Exactly the five members hang off the enum. */
+    cbm_edge_t *edges = NULL;
+    int ecount = 0;
+    if (cbm_store_find_edges_by_source_type(store, enum_id, "DEFINES", &edges, &ecount) ==
+        CBM_STORE_OK) {
+        if (ecount != 5) {
+            fprintf(stderr, "  [ES-TCM] enum DEFINES out-degree %d, expected 5\n", ecount);
+            failed++;
+        }
+        cbm_store_free_edges(edges, ecount);
+    }
+
+    /* Struct: declared type text incl. the library prefix, no enum_value. */
+    int64_t par_id = es_tcm_node_id(store, lp.project, "Type", "T_Par", ES_TCM_PAR_FILE);
+    int64_t nop_id = es_tcm_node_id(store, lp.project, "Field", "NumberOfPulses", ES_TCM_PAR_FILE);
+    cbm_node_t nop;
+    memset(&nop, 0, sizeof(nop));
+    if (nop_id && cbm_store_find_node_by_id(store, nop_id, &nop) == CBM_STORE_OK) {
+        int ok = nop.properties_json &&
+                 strstr(nop.properties_json, "\"return_type\":\"Ns_M.I_ParInt\"") &&
+                 !strstr(nop.properties_json, "enum_value") && nop.start_line == 6;
+        if (!ok) {
+            fprintf(stderr, "  [ES-TCM] Field NumberOfPulses: line=%d props=%s\n", nop.start_line,
+                    nop.properties_json ? nop.properties_json : "(null)");
+        }
+        failed += !ok;
+        cbm_node_free_fields(&nop);
+    } else {
+        fprintf(stderr, "  [ES-TCM] Field NumberOfPulses missing\n");
+        failed++;
+    }
+    char props[64];
+    failed += es_tcm_edge_props(store, par_id, nop_id, "DEFINES", props, sizeof(props)) != 1;
+    failed += es_tcm_node_id(store, lp.project, "Field", "Arr", ES_TCM_PAR_FILE) == 0;
+    /* Union members likewise. */
+    int64_t union_id = es_tcm_node_id(store, lp.project, "Type", "U_Raw", ES_TCM_UNION_FILE);
+    int64_t word_id = es_tcm_node_id(store, lp.project, "Field", "Word", ES_TCM_UNION_FILE);
+    failed += es_tcm_edge_props(store, union_id, word_id, "DEFINES", props, sizeof(props)) != 1;
+    failed += es_tcm_node_id(store, lp.project, "Field", "Bytes", ES_TCM_UNION_FILE) == 0;
+
+    if (failed) {
+        es_dump_edge_histogram(store, lp.project);
+    }
+    es_lang_cleanup(&lp, store);
+    free(fx);
+    ASSERT_EQ(failed, 0);
+    PASS();
+}
+
+/* Member-level USAGE edges with line/count, type-level USAGE edges with
+ * line/count, and the guards: an unknown member yields nothing, a bare member
+ * name never binds a DUT member. Same expectations for both resolve venues. */
+static int es_tcm_member_usage_fixture(bool parallel, bool dup_enum) {
+    ES_LangProj lp;
+    ES_TcMemberFixture *fx = calloc(1, sizeof(*fx));
+    if (!fx) {
+        return 1;
+    }
+    cbm_store_t *store = es_tcm_index(&lp, fx, parallel, dup_enum);
+    if (!store) {
+        es_lang_cleanup(&lp, store);
+        free(fx);
+        return 1;
+    }
+    const char *p = lp.project;
+    int failed = 0;
+    int64_t sm = es_tcm_node_id(store, p, "Method", "stateMachine", ES_TCM_FB_FILE);
+    int64_t tc = es_tcm_node_id(store, p, "Method", "Test_Close", ES_TCM_FB_FILE);
+    int64_t fb_module = es_tcm_node_id(store, p, "Module", ES_TCM_FB_FILE, ES_TCM_FB_FILE);
+    int64_t enum_t = es_tcm_node_id(store, p, "Type", "E_ValveState", ES_TCM_ENUM_FILE);
+    int64_t par_t = es_tcm_node_id(store, p, "Type", "T_Par", ES_TCM_PAR_FILE);
+    int64_t close_f = es_tcm_node_id(store, p, "Field", "CLOSE", ES_TCM_ENUM_FILE);
+    int64_t open_f = es_tcm_node_id(store, p, "Field", "OPEN", ES_TCM_ENUM_FILE);
+    int64_t off_f = es_tcm_node_id(store, p, "Field", "OFF", ES_TCM_ALARM_FILE);
+    int64_t nop_f = es_tcm_node_id(store, p, "Field", "NumberOfPulses", ES_TCM_PAR_FILE);
+    int64_t inner_f = es_tcm_node_id(store, p, "Field", "Inner", ES_TCM_PAR_FILE);
+    int64_t depth_f = es_tcm_node_id(store, p, "Field", "Depth", ES_TCM_INNER_FILE);
+    failed += !sm || !tc || !fb_module || !enum_t || !par_t || !close_f || !open_f || !off_f ||
+              !nop_f || !inner_f || !depth_f;
+    if (failed) {
+        fprintf(stderr,
+                "  [ES-TCM] node lookup: sm=%d tc=%d mod=%d enum=%d par=%d close=%d "
+                "open=%d off=%d nop=%d inner=%d depth=%d\n",
+                sm != 0, tc != 0, fb_module != 0, enum_t != 0, par_t != 0, close_f != 0,
+                open_f != 0, off_f != 0, nop_f != 0, inner_f != 0, depth_f != 0);
+    }
+    /* Enum members: CASE label, assignment, comparison (lines 32, 33, 35). */
+    failed += !es_tcm_expect_usage(store, sm, close_f, "stateMachine->CLOSE", 32, 3);
+    failed += !es_tcm_expect_usage(store, sm, open_f, "stateMachine->OPEN", 27, 1);
+    failed += !es_tcm_expect_usage(store, tc, close_f, "Test_Close->CLOSE (named arg)", 46, 1);
+    /* Library-qualified enum member through the .plcproj namespace alias. */
+    failed += !es_tcm_expect_usage(store, sm, off_f, "stateMachine->Ns_M.E_Alarm.OFF", 36, 1);
+    /* Struct fields via the FB-level VAR (_par), the VAR_INPUT chain (inPar.Inner.Depth)
+     * and the method-local VAR (local.Depth). */
+    failed += !es_tcm_expect_usage(store, sm, nop_f, "stateMachine->_par.NumberOfPulses", 28, 1);
+    failed += !es_tcm_expect_usage(store, sm, inner_f, "stateMachine->inPar.Inner", 29, 1);
+    failed += !es_tcm_expect_usage(store, sm, depth_f, "stateMachine->Depth", 29, 2);
+    /* Type-level edges now carry occurrence data too; the set itself is guarded
+     * elsewhere. With a same-named enum in the other library the bare type name
+     * is ambiguous for the generic resolver, so only the unambiguous case is
+     * pinned here. */
+    if (!dup_enum) {
+        failed += !es_tcm_expect_usage(store, sm, enum_t, "stateMachine->E_ValveState", 27, 5);
+        failed += !es_tcm_expect_usage(store, tc, enum_t, "Test_Close->E_ValveState", 46, 1);
+        failed += !es_tcm_expect_usage(store, fb_module, par_t, "FB_Drain module->T_Par", 6, 2);
+        failed += !es_tcm_expect_usage(store, fb_module, enum_t, "FB_Drain module->E_ValveState",
+                                       9, 1);
+    } else {
+        /* LibM's same-named enum: its CLOSE is never a target of LibApp's references. */
+        int64_t dup_close =
+            es_tcm_node_id(store, p, "Field", "CLOSE", "LibM/DUTs/E_ValveState.TcDUT");
+        int dup_in = es_tcm_inbound(store, dup_close, "USAGE");
+        if (dup_close == 0 || dup_in != 0) {
+            fprintf(stderr, "  [ES-TCM] LibM E_ValveState.CLOSE: node=%d inbound USAGE=%d\n",
+                    dup_close != 0, dup_in);
+            failed++;
+        }
+    }
+    /* Guards: `y := CLOSE` (bare) and `E_ValveState.UNKNOWN_MEMBER` add nothing —
+     * CLOSE has exactly its two qualified sources; Depth is never bound by the
+     * bare-name READS/WRITES fallback (`local.Depth := 2`). */
+    int close_in = es_tcm_inbound(store, close_f, "USAGE");
+    int depth_writes = es_tcm_inbound(store, depth_f, "WRITES");
+    int depth_reads = es_tcm_inbound(store, depth_f, "READS");
+    int depth_usage = es_tcm_inbound(store, depth_f, "USAGE");
+    if (close_in != 2 || depth_writes != 0 || depth_reads != 0 || depth_usage != 1) {
+        fprintf(stderr,
+                "  [ES-TCM] guards: CLOSE usage in=%d (want 2), Depth writes=%d reads=%d "
+                "usage=%d (want 0/0/1)\n",
+                close_in, depth_writes, depth_reads, depth_usage);
+        failed++;
+    }
+    if (failed) {
+        es_dump_edge_histogram(store, p);
+    }
+    es_lang_cleanup(&lp, store);
+    free(fx);
+    return failed;
+}
+
+TEST(es_twincat_member_usage_edges_sequential) {
+    ASSERT_EQ(es_tcm_member_usage_fixture(false, false), 0);
+    PASS();
+}
+
+TEST(es_twincat_member_usage_edges_parallel) {
+    ASSERT_EQ(es_tcm_member_usage_fixture(true, false), 0);
+    PASS();
+}
+
+/* Same expectations when the enum name exists in two libraries: the member
+ * binds inside the referencing library, and the now-ambiguous bare name
+ * (registry-wise) must not suppress the exact member edge. */
+TEST(es_twincat_member_usage_same_name_in_two_libraries_sequential) {
+    ASSERT_EQ(es_tcm_member_usage_fixture(false, true), 0);
+    PASS();
+}
+
+TEST(es_twincat_member_usage_same_name_in_two_libraries_parallel) {
+    ASSERT_EQ(es_tcm_member_usage_fixture(true, true), 0);
+    PASS();
+}
+
+/* Member resolution never binds a type of another language (a C struct is
+ * the only T_Foreign) and prefers a type declared in the referencing file
+ * over a same-named one elsewhere in the library. */
+TEST(es_twincat_member_usage_never_crosses_languages_or_files) {
+    ES_LangProj lp;
+    ES_TcMemberFixture *fx = calloc(1, sizeof(*fx));
+    ASSERT_NOT_NULL(fx);
+    cbm_store_t *store = es_tcm_index(&lp, fx, false, true);
+    ASSERT_NOT_NULL(store);
+    const char *p = lp.project;
+    int failed = 0;
+    int64_t c_depth = es_tcm_node_id(store, p, "Field", "Depth", "LibApp/native/foreign.c");
+    int c_in = es_tcm_inbound(store, c_depth, "USAGE");
+    if (c_depth == 0 || c_in != 0) {
+        fprintf(stderr, "  [ES-TCM] C struct field Depth: node=%d inbound USAGE=%d (want 0)\n",
+                c_depth != 0, c_in);
+        failed++;
+    }
+    int64_t a_depth = es_tcm_node_id(store, p, "Field", "Depth", "LibApp/Plain/a.st");
+    int64_t b_depth = es_tcm_node_id(store, p, "Field", "Depth", "LibApp/Plain/b.st");
+    int a_in = es_tcm_inbound(store, a_depth, "USAGE");
+    int b_in = es_tcm_inbound(store, b_depth, "USAGE");
+    if (a_depth == 0 || b_depth == 0 || a_in != 1 || b_in != 0) {
+        fprintf(stderr, "  [ES-TCM] plain-ST T_Loc.Depth: a=%d(in %d) b=%d(in %d), want 1/0\n",
+                a_depth != 0, a_in, b_depth != 0, b_in);
+        failed++;
+    }
+    if (failed) {
+        es_dump_edge_histogram(store, p);
+    }
+    es_lang_cleanup(&lp, store);
+    free(fx);
+    ASSERT_EQ(failed, 0);
+    PASS();
+}
+
+/* ══════════════════════════════════════════════════════════════════
  * FAMILY 3: IMPLEMENTS cross-file (Rust trait + struct)
  *
  * Trait defined in a.rs, impl block in b.rs.
@@ -1173,6 +1837,13 @@ SUITE(edge_structural) {
     /* GREEN: TwinCAT namespace-qualified bases, both resolve venues. */
     RUN_TEST(es_twincat_qualified_base_in_library_sequential);
     RUN_TEST(es_twincat_qualified_base_in_library_parallel);
+    RUN_TEST(es_twincat_type_usage_edge_set_unchanged);
+    RUN_TEST(es_twincat_dut_members_are_fields_under_type);
+    RUN_TEST(es_twincat_member_usage_edges_sequential);
+    RUN_TEST(es_twincat_member_usage_edges_parallel);
+    RUN_TEST(es_twincat_member_usage_same_name_in_two_libraries_sequential);
+    RUN_TEST(es_twincat_member_usage_same_name_in_two_libraries_parallel);
+    RUN_TEST(es_twincat_member_usage_never_crosses_languages_or_files);
 
     /* ── FAMILY 3: IMPLEMENTS cross-file (Rust) ──────────────── */
     /* Expected GREEN: project-wide registry covers both files. */

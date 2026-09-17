@@ -1035,13 +1035,22 @@ static bool incr_label_is_registry_symbol(const char *label) {
  * project's definition symbols so the resolver can match cross-file symbols
  * during incremental. Mirrors the full-index registry contents exactly so an
  * incremental re-resolve picks the same nodes a full reindex would. */
+typedef struct {
+    cbm_registry_t *registry;
+    const cbm_gbuf_t *gbuf;
+} registry_seed_t;
+
 static void registry_visitor(const cbm_gbuf_node_t *node, void *userdata) {
-    cbm_registry_t *r = (cbm_registry_t *)userdata;
-    if (!incr_label_is_registry_symbol(node->label)) {
+    registry_seed_t *seed = (registry_seed_t *)userdata;
+    /* Same exclusion as the two full-index venues: a Structured Text enum
+     * member / struct field (Field under a Type) is never a bare-name symbol. */
+    if (!incr_label_is_registry_symbol(node->label) ||
+        cbm_st_is_dut_member_qn(seed->gbuf, node->label, node->qualified_name)) {
         return;
     }
-    cbm_registry_add(r, node->name, node->qualified_name, node->label);
+    cbm_registry_add(seed->registry, node->name, node->qualified_name, node->label);
 }
+
 
 static void free_incremental_result_cache(CBMFileResult **cache, int count) {
     if (!cache) {
@@ -2013,7 +2022,9 @@ static int run_closure_delta(cbm_pipeline_t *p, const char *db_path, const char 
     if (!registry) {
         goto out;
     }
-    cbm_gbuf_foreach_node(gbuf, registry_visitor, registry);
+    registry_seed_t seed = {registry, gbuf};
+    cbm_gbuf_foreach_node(gbuf, registry_visitor, &seed);
+
     cbm_log_info("delta.preseed_done", "registry", itoa_buf(cbm_registry_size(registry)),
                  "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
 
@@ -2688,7 +2699,9 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
     /* Step 3-5: Registry + extract + resolve */
     cbm_registry_t *registry = cbm_registry_new();
     cbm_clock_gettime(CLOCK_MONOTONIC, &t);
-    cbm_gbuf_foreach_node(existing, registry_visitor, registry);
+    registry_seed_t seed = {registry, existing};
+    cbm_gbuf_foreach_node(existing, registry_visitor, &seed);
+
     cbm_log_info("incremental.registry_seed", "symbols", itoa_buf(cbm_registry_size(registry)),
                  "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
 

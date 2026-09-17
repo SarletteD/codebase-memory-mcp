@@ -7503,6 +7503,410 @@ TEST(twincat_file_without_object_is_empty_not_error) {
     PASS();
 }
 
+/* ── Structured Text DUT internals: enum members / struct fields as Fields ── */
+
+/* The Field def named `name` whose parent_class is the Type def `parent`. */
+static const CBMDefinition *st_member(CBMFileResult *r, const char *parent, const char *name) {
+    const CBMDefinition *p = twincat_def(r, "Type", parent);
+    if (!p) {
+        return NULL;
+    }
+    for (int i = 0; i < r->defs.count; i++) {
+        const CBMDefinition *d = &r->defs.items[i];
+        if (d->label && strcmp(d->label, "Field") == 0 && d->name && strcmp(d->name, name) == 0 &&
+            d->parent_class && strcmp(d->parent_class, p->qualified_name) == 0) {
+            return d;
+        }
+    }
+    return NULL;
+}
+
+static int st_member_count(CBMFileResult *r, const char *parent) {
+    const CBMDefinition *p = twincat_def(r, "Type", parent);
+    int n = 0;
+    for (int i = 0; p && i < r->defs.count; i++) {
+        const CBMDefinition *d = &r->defs.items[i];
+        if (d->label && strcmp(d->label, "Field") == 0 && d->parent_class &&
+            strcmp(d->parent_class, p->qualified_name) == 0) {
+            n++;
+        }
+    }
+    return n;
+}
+
+/* One member check: value, line, base type and the QN shape <enum qn>.<member>. */
+static int st_enum_member_ok(CBMFileResult *r, const char *parent, const char *name,
+                             long long value, int line, const char *base) {
+    const CBMDefinition *d = st_member(r, parent, name);
+    const CBMDefinition *p = twincat_def(r, "Type", parent);
+    if (!d || !p) {
+        fprintf(stderr, "  [ST-ENUM] %s.%s: no Field def\n", parent, name);
+        return 0;
+    }
+    char qn[512];
+    snprintf(qn, sizeof(qn), "%s.%s", p->qualified_name, name);
+    int ok = d->has_enum_value && d->enum_value == value && (int)d->start_line == line &&
+             (int)d->end_line == line && d->return_type && strcmp(d->return_type, base) == 0 &&
+             strcmp(d->qualified_name, qn) == 0;
+    if (!ok) {
+        fprintf(stderr, "  [ST-ENUM] %s.%s: has=%d value=%lld line=%u-%u type=%s qn=%s\n", parent,
+                name, d->has_enum_value, (long long)d->enum_value, d->start_line, d->end_line,
+                d->return_type ? d->return_type : "(null)", d->qualified_name);
+    }
+    return ok;
+}
+
+/* Explicit, implicit and mixed values, a comment between members and a trailing
+ * comma (which the grammar parses as an empty enumerator that must not become a
+ * node). Plain .st: no base type is expressible, so the base defaults to INT. */
+TEST(st_enum_members_are_fields_with_values) {
+    CBMFileResult *r = extract("TYPE E_State :\n"                    /* 1 */
+                               "(\n"                                 /* 2 */
+                               "\tONE_TIME_INIT := 0,\n"             /* 3 */
+                               "\tINIT,\n"                           /* 4 */
+                               "\t(* comment between members *)\n"   /* 5 */
+                               "\tOPEN := 2,\n"                      /* 6 */
+                               "\tCLOSE,\n"                          /* 7 */
+                               "\tERROR_LIMIT := 10,\n"              /* 8 */
+                               ");\n"                                /* 9 */
+                               "END_TYPE\n",                         /* 10 */
+                               CBM_LANG_ST, "t", "E_State.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_NOT_NULL(twincat_def(r, "Type", "E_State"));
+    ASSERT_EQ(st_member_count(r, "E_State"), 5);
+    ASSERT(st_enum_member_ok(r, "E_State", "ONE_TIME_INIT", 0, 3, "INT"));
+    ASSERT(st_enum_member_ok(r, "E_State", "INIT", 1, 4, "INT"));
+    ASSERT(st_enum_member_ok(r, "E_State", "OPEN", 2, 6, "INT"));
+    ASSERT(st_enum_member_ok(r, "E_State", "CLOSE", 3, 7, "INT"));
+    ASSERT(st_enum_member_ok(r, "E_State", "ERROR_LIMIT", 10, 8, "INT"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* Implicit values continue from the last explicit one, including a negative and
+ * a based literal. */
+TEST(st_enum_values_continue_after_negative_and_based_literals) {
+    CBMFileResult *r = extract("TYPE E_Mix : (A, B, C := -1, D, E := 16#10, F); END_TYPE\n",
+                               CBM_LANG_ST, "t", "E_Mix.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ(st_member_count(r, "E_Mix"), 6);
+    ASSERT(st_enum_member_ok(r, "E_Mix", "A", 0, 1, "INT"));
+    ASSERT(st_enum_member_ok(r, "E_Mix", "B", 1, 1, "INT"));
+    ASSERT(st_enum_member_ok(r, "E_Mix", "C", -1, 1, "INT"));
+    ASSERT(st_enum_member_ok(r, "E_Mix", "D", 0, 1, "INT"));
+    ASSERT(st_enum_member_ok(r, "E_Mix", "E", 16, 1, "INT"));
+    ASSERT(st_enum_member_ok(r, "E_Mix", "F", 17, 1, "INT"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* Struct fields keep the declared type text verbatim (library prefix, array
+ * shape, nested struct) and carry no enum value. */
+TEST(st_struct_fields_are_fields_with_declared_types) {
+    CBMFileResult *r = extract("TYPE T_Par :\n"                                    /* 1 */
+                               "STRUCT\n"                                          /* 2 */
+                               "\tNumberOfPulses : Vnd_Core.I_ParameterInteger;\n"  /* 3 */
+                               "\tInner : T_Inner;\n"                              /* 4 */
+                               "\tArr : ARRAY [0..3] OF INT;\n"                    /* 5 */
+                               "END_STRUCT;\n"                                     /* 6 */
+                               "END_TYPE\n",                                       /* 7 */
+                               CBM_LANG_ST, "t", "T_Par.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT_EQ(st_member_count(r, "T_Par"), 3);
+    const CBMDefinition *p = twincat_def(r, "Type", "T_Par");
+    const CBMDefinition *n = st_member(r, "T_Par", "NumberOfPulses");
+    const CBMDefinition *inner = st_member(r, "T_Par", "Inner");
+    const CBMDefinition *arr = st_member(r, "T_Par", "Arr");
+    ASSERT_NOT_NULL(n);
+    ASSERT_NOT_NULL(inner);
+    ASSERT_NOT_NULL(arr);
+    ASSERT_STR_EQ(n->return_type, "Vnd_Core.I_ParameterInteger");
+    ASSERT_STR_EQ(inner->return_type, "T_Inner");
+    ASSERT_STR_EQ(arr->return_type, "ARRAY [0..3] OF INT");
+    ASSERT_FALSE(n->has_enum_value);
+    ASSERT_EQ((int)n->start_line, 3);
+    ASSERT_EQ((int)arr->start_line, 5);
+    char qn[512];
+    snprintf(qn, sizeof(qn), "%s.Inner", p->qualified_name);
+    ASSERT_STR_EQ(inner->qualified_name, qn);
+    /* The field's type is still a usage of the enclosing module (unchanged). */
+    ASSERT_EQ(st_usage_count(r, "T_Inner"), 1);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* TwinCAT enums: pragmas before TYPE, the base type ") UINT;" the grammar
+ * cannot read is recorded as the members' return_type, and lines are XML lines. */
+TEST(twincat_enum_members_carry_base_type_and_xml_lines) {
+    static const char XML[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"        /* 1 */
+                              "<TcPlcObject Version=\"1.1.0.1\">\n"                 /* 2 */
+                              "  <DUT Name=\"E_ValveState\" Id=\"{1}\">\n"          /* 3 */
+                              "    <Declaration><![CDATA[{attribute 'qualified_only'}\n" /* 4 */
+                              "{attribute 'strict'}\n"                              /* 5 */
+                              "TYPE E_ValveState :\n"                               /* 6 */
+                              "(\n"                                                 /* 7 */
+                              "\tONE_TIME_INIT := 0,\n"                             /* 8 */
+                              "\tINIT,\n"                                           /* 9 */
+                              "\tOPEN := 2,\n"                                      /* 10 */
+                              "\tCLOSE,\n"                                          /* 11 */
+                              "\tERROR_LIMIT := 10\n"                               /* 12 */
+                              ") UINT;\n"                                           /* 13 */
+                              "END_TYPE\n"                                          /* 14 */
+                              "]]></Declaration>\n"                                 /* 15 */
+                              "  </DUT>\n"                                          /* 16 */
+                              "</TcPlcObject>\n";                                   /* 17 */
+    CBMFileResult *r = extract(XML, CBM_LANG_TWINCAT, "t", "E_ValveState.TcDUT");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT_EQ(st_member_count(r, "E_ValveState"), 5);
+    ASSERT(st_enum_member_ok(r, "E_ValveState", "ONE_TIME_INIT", 0, 8, "UINT"));
+    ASSERT(st_enum_member_ok(r, "E_ValveState", "INIT", 1, 9, "UINT"));
+    ASSERT(st_enum_member_ok(r, "E_ValveState", "OPEN", 2, 10, "UINT"));
+    ASSERT(st_enum_member_ok(r, "E_ValveState", "CLOSE", 3, 11, "UINT"));
+    ASSERT(st_enum_member_ok(r, "E_ValveState", "ERROR_LIMIT", 10, 12, "UINT"));
+    cbm_free_result(r);
+
+    /* Two enums in one declaration text: each keeps its own base. */
+    static const char TWO[] = "<?xml version=\"1.0\"?>\n<TcPlcObject>\n<DUT Name=\"E_A\">\n"
+                              "<Declaration><![CDATA[TYPE E_A : (X, Y) DINT; END_TYPE\n"
+                              "TYPE E_B : (P, Q); END_TYPE\n"
+                              "]]></Declaration>\n</DUT>\n</TcPlcObject>\n";
+    r = extract(TWO, CBM_LANG_TWINCAT, "t", "E_A.TcDUT");
+    ASSERT_NOT_NULL(r);
+    ASSERT(st_enum_member_ok(r, "E_A", "Y", 1, 4, "DINT"));
+    ASSERT(st_enum_member_ok(r, "E_B", "Q", 1, 5, "INT"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A TwinCAT UNION is not in the grammar; it is read as a struct and its members
+ * become Fields of the union Type. */
+TEST(twincat_union_members_are_fields) {
+    static const char XML[] = "<?xml version=\"1.0\"?>\n<TcPlcObject>\n<DUT Name=\"U_Raw\">\n"
+                              "<Declaration><![CDATA[TYPE U_Raw :\n"      /* 4 */
+                              "UNION\n"                                    /* 5 */
+                              "\tWord : WORD;\n"                           /* 6 */
+                              "\tBytes : ARRAY [0..1] OF BYTE;\n"          /* 7 */
+                              "END_UNION\n"                                /* 8 */
+                              "END_TYPE\n"                                 /* 9 */
+                              "]]></Declaration>\n</DUT>\n</TcPlcObject>\n";
+    CBMFileResult *r = extract(XML, CBM_LANG_TWINCAT, "t", "U_Raw.TcDUT");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT_NOT_NULL(twincat_def(r, "Type", "U_Raw"));
+    ASSERT_EQ(st_member_count(r, "U_Raw"), 2);
+    const CBMDefinition *w = st_member(r, "U_Raw", "Word");
+    const CBMDefinition *b = st_member(r, "U_Raw", "Bytes");
+    ASSERT_NOT_NULL(w);
+    ASSERT_NOT_NULL(b);
+    ASSERT_STR_EQ(w->return_type, "WORD");
+    ASSERT_STR_EQ(b->return_type, "ARRAY [0..1] OF BYTE");
+    ASSERT_EQ((int)w->start_line, 6);
+    ASSERT_EQ((int)b->start_line, 7);
+    ASSERT_FALSE(w->has_enum_value);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* The k-th (0-based) usage record named `name`, or NULL. */
+static const CBMUsage *st_usage_nth(const CBMFileResult *r, const char *name, int k) {
+    for (int i = 0; i < r->usages.count; i++) {
+        const CBMUsage *u = &r->usages.items[i];
+        if (u->ref_name && strcmp(u->ref_name, name) == 0 && k-- == 0) {
+            return u;
+        }
+    }
+    return NULL;
+}
+
+static int st_usage_shape_ok(const CBMUsage *u, const char *qualifier, const char *qualifier_type,
+                             int line) {
+    if (!u) {
+        fprintf(stderr, "  [ST-USAGE] missing usage\n");
+        return 0;
+    }
+    int ok = (int)u->start_line == line &&
+             ((qualifier == NULL && u->member_qualifier == NULL) ||
+              (qualifier && u->member_qualifier && strcmp(u->member_qualifier, qualifier) == 0)) &&
+             ((qualifier_type == NULL && u->qualifier_type == NULL) ||
+              (qualifier_type && u->qualifier_type &&
+               strcmp(u->qualifier_type, qualifier_type) == 0));
+    if (!ok) {
+        fprintf(stderr, "  [ST-USAGE] %s: line=%u member=%d qualifier=%s type=%s\n", u->ref_name,
+                u->start_line, u->is_member_access,
+                u->member_qualifier ? u->member_qualifier : "(null)",
+                u->qualifier_type ? u->qualifier_type : "(null)");
+    }
+    return ok;
+}
+
+/* A member token records the dotted receiver it hangs off and, when the
+ * receiver's head is declared in an enclosing VAR block of the same POU, that
+ * declared type. Every usage carries its 1-based line. */
+TEST(st_member_access_usage_records_qualifier_and_declared_type) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_X\n"                       /* 1 */
+                               "VAR_INPUT\n"                                 /* 2 */
+                               "\tinPar : T_Par;\n"                          /* 3 */
+                               "END_VAR\n"                                   /* 4 */
+                               "VAR\n"                                       /* 5 */
+                               "\t_par : T_Par;\n"                           /* 6 */
+                               "\t_state : E_State;\n"                       /* 7 */
+                               "\tarr : ARRAY [0..1] OF T_Inner;\n"          /* 8 */
+                               "END_VAR\n"                                   /* 9 */
+                               "METHOD stateMachine : BOOL\n"                /* 10 */
+                               "VAR\n"                                       /* 11 */
+                               "\tlocal : T_Inner;\n"                        /* 12 */
+                               "END_VAR\n"                                   /* 13 */
+                               "IF _state = E_State.CLOSE THEN\n"            /* 14 */
+                               "\t_par.NumberOfPulses := 1;\n"               /* 15 */
+                               "\tIF inPar.Inner.Depth > 0 THEN\n"           /* 16 */
+                               "\t\tlocal.Depth := Vnd_Core.E_AlarmState.OFF;\n" /* 17 */
+                               "\tEND_IF\n"                                  /* 18 */
+                               "\tarr[0].Depth := 2;\n"                      /* 19 */
+                               "END_IF\n"                                    /* 20 */
+                               "END_METHOD\n"                                /* 21 */
+                               "END_FUNCTION_BLOCK\n",                       /* 22 */
+                               CBM_LANG_ST, "t", "FB_X.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    /* Type-level: the object half stays an ordinary usage (unchanged behaviour). */
+    ASSERT_EQ(st_usage_count(r, "E_State"), 2);
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "E_State", 1), NULL, NULL, 14));
+    ASSERT_FALSE(st_usage_nth(r, "E_State", 1)->is_member_access);
+    /* Enum member: qualifier is the type name, no declared variable behind it. */
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "CLOSE", 0), "E_State", NULL, 14));
+    /* Struct field through an FB-level VAR; a write target is still a reference to the field. */
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "NumberOfPulses", 0), "_par", "T_Par", 15));
+    /* Chain through a VAR_INPUT: the head's declared type, the full receiver path. */
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "Inner", 0), "inPar", "T_Par", 16));
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "Depth", 0), "inPar.Inner", "T_Par", 16));
+    /* Method-local VAR wins for its own name. */
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "Depth", 1), "local", "T_Inner", 17));
+    /* Library-qualified enum member: qualifier keeps the namespace prefix. */
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "OFF", 0), "Vnd_Core.E_AlarmState", NULL, 17));
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "E_AlarmState", 0), "Vnd_Core", NULL, 17));
+    /* A receiver that is not a plain dotted identifier chain resolves nothing. */
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "Depth", 2), NULL, NULL, 19));
+    ASSERT_NOT_NULL(st_usage_nth(r, "Depth", 2));
+    ASSERT(st_usage_nth(r, "Depth", 2)->is_member_access);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A value past INT64_MAX, or the successor of INT64_MAX, is unknown rather
+ * than overflowed; the next explicit literal restarts the sequence. */
+TEST(st_enum_values_stop_at_int64_overflow) {
+    CBMFileResult *r = extract("TYPE E_Big : (A := 9223372036854775807, B, C := 1, D, "
+                               "E := 99999999999999999999, F); END_TYPE\n",
+                               CBM_LANG_ST, "t", "E_Big.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ(st_member_count(r, "E_Big"), 6);
+    ASSERT(st_enum_member_ok(r, "E_Big", "A", 9223372036854775807LL, 1, "INT"));
+    const CBMDefinition *b = st_member(r, "E_Big", "B");
+    const CBMDefinition *e = st_member(r, "E_Big", "E");
+    const CBMDefinition *f = st_member(r, "E_Big", "F");
+    ASSERT_NOT_NULL(b);
+    ASSERT_NOT_NULL(e);
+    ASSERT_NOT_NULL(f);
+    ASSERT_FALSE(b->has_enum_value);
+    ASSERT_FALSE(e->has_enum_value);
+    ASSERT_FALSE(f->has_enum_value);
+    ASSERT(b->is_enum_member);
+    ASSERT(st_enum_member_ok(r, "E_Big", "C", 1, 1, "INT"));
+    ASSERT(st_enum_member_ok(r, "E_Big", "D", 2, 1, "INT"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* INT64_MIN is representable; only a larger magnitude is unknown. */
+TEST(st_enum_value_int64_min_is_representable) {
+    CBMFileResult *r = extract("TYPE E_Min : (A := -9223372036854775808, B); END_TYPE\n",
+                               CBM_LANG_ST, "t", "E_Min.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT(st_enum_member_ok(r, "E_Min", "A", -9223372036854775807LL - 1, 1, "INT"));
+    ASSERT(st_enum_member_ok(r, "E_Min", "B", -9223372036854775807LL, 1, "INT"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* The receiver key is built from identifier tokens, so formatting inside the
+ * chain (blanks around the dots) does not break the exact lookup. */
+TEST(st_member_qualifier_is_built_from_identifier_tokens) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_X\n"
+                               "VAR\n"
+                               "\t_par : T_Par;\n"
+                               "END_VAR\n"
+                               "_par . Inner . Depth := E_State . CLOSE;\n"
+                               "END_FUNCTION_BLOCK\n",
+                               CBM_LANG_ST, "t", "FB_X.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "Depth", 0), "_par.Inner", "T_Par", 5));
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "CLOSE", 0), "E_State", NULL, 5));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* The stripped enum base reaches enum members only: a struct declared on the
+ * same source line keeps its declared field types. */
+TEST(twincat_enum_base_only_reaches_enum_members) {
+    static const char XML[] = "<?xml version=\"1.0\"?>\n<TcPlcObject>\n<DUT Name=\"E_A\">\n"
+                              "<Declaration><![CDATA[TYPE E_A : (X, Y) UINT; END_TYPE "
+                              "TYPE T_S : STRUCT a : INT; b : E_A; END_STRUCT END_TYPE\n"
+                              "]]></Declaration>\n</DUT>\n</TcPlcObject>\n";
+    CBMFileResult *r = extract(XML, CBM_LANG_TWINCAT, "t", "E_A.TcDUT");
+    ASSERT_NOT_NULL(r);
+    ASSERT(st_enum_member_ok(r, "E_A", "Y", 1, 4, "UINT"));
+    const CBMDefinition *fa = st_member(r, "T_S", "a");
+    const CBMDefinition *fb = st_member(r, "T_S", "b");
+    ASSERT_NOT_NULL(fa);
+    ASSERT_NOT_NULL(fb);
+    ASSERT_STR_EQ(fa->return_type, "INT");
+    ASSERT_STR_EQ(fb->return_type, "E_A");
+    ASSERT_FALSE(fa->is_enum_member);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* TwinCAT: usage lines are XML lines, like definitions. */
+TEST(twincat_usage_lines_are_xml_lines) {
+    static const char XML[] =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"                /* 1 */
+        "<TcPlcObject Version=\"1.1.0.1\">\n"                         /* 2 */
+        "  <POU Name=\"FB_Drain\" Id=\"{1}\" SpecialFunc=\"None\">\n" /* 3 */
+        "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Drain\n"         /* 4 */
+        "VAR\n"                                                       /* 5 */
+        "\t_state : E_ValveState;\n"                                  /* 6 */
+        "END_VAR\n"                                                   /* 7 */
+        "]]></Declaration>\n"                                         /* 8 */
+        "    <Implementation>\n"                                      /* 9 */
+        "      <ST><![CDATA[]]></ST>\n"                               /* 10 */
+        "    </Implementation>\n"                                     /* 11 */
+        "    <Method Name=\"stateMachine\" Id=\"{2}\">\n"             /* 12 */
+        "      <Declaration><![CDATA[METHOD stateMachine : BOOL\n"    /* 13 */
+        "]]></Declaration>\n"                                         /* 14 */
+        "      <Implementation>\n"                                    /* 15 */
+        "        <ST><![CDATA[IF _state = E_ValveState.CLOSE THEN\n"  /* 16 */
+        "\t_state := E_ValveState.OPEN;\n"                            /* 17 */
+        "END_IF]]></ST>\n"                                            /* 18 */
+        "      </Implementation>\n"                                   /* 19 */
+        "    </Method>\n"                                             /* 20 */
+        "  </POU>\n"                                                  /* 21 */
+        "</TcPlcObject>\n";                                           /* 22 */
+    CBMFileResult *r = extract(XML, CBM_LANG_TWINCAT, "t", "FB_Drain.TcPOU");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT_EQ(st_usage_count(r, "E_ValveState"), 3);
+    ASSERT_EQ((int)st_usage_nth(r, "E_ValveState", 0)->start_line, 6);
+    ASSERT_EQ((int)st_usage_nth(r, "E_ValveState", 1)->start_line, 16);
+    ASSERT_EQ((int)st_usage_nth(r, "E_ValveState", 2)->start_line, 17);
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "CLOSE", 0), "E_ValveState", NULL, 16));
+    ASSERT(st_usage_shape_ok(st_usage_nth(r, "OPEN", 0), "E_ValveState", NULL, 17));
+    cbm_free_result(r);
+    PASS();
+}
+
 SUITE(extraction) {
     /* Initialize extraction library */
     cbm_init();
@@ -7521,6 +7925,19 @@ SUITE(extraction) {
     RUN_TEST(twincat_dut_dialect_normalized);
     RUN_TEST(twincat_normalize_preserves_lines_and_scopes_declaration_rewrites);
     RUN_TEST(twincat_file_without_object_is_empty_not_error);
+
+    /* DUT internals: enum members / struct fields / member usages */
+    RUN_TEST(st_enum_members_are_fields_with_values);
+    RUN_TEST(st_enum_values_continue_after_negative_and_based_literals);
+    RUN_TEST(st_struct_fields_are_fields_with_declared_types);
+    RUN_TEST(twincat_enum_members_carry_base_type_and_xml_lines);
+    RUN_TEST(twincat_union_members_are_fields);
+    RUN_TEST(st_member_access_usage_records_qualifier_and_declared_type);
+    RUN_TEST(twincat_usage_lines_are_xml_lines);
+    RUN_TEST(st_enum_values_stop_at_int64_overflow);
+    RUN_TEST(st_member_qualifier_is_built_from_identifier_tokens);
+    RUN_TEST(twincat_enum_base_only_reaches_enum_members);
+    RUN_TEST(st_enum_value_int64_min_is_representable);
 
     /* Wide-flat-file linearity (ms-typescript hang) */
     RUN_TEST(extract_wide_flat_file_is_linear);
