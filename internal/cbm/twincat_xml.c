@@ -1273,8 +1273,8 @@ static const TcPouKind *kind_of(const char *d, size_t n) {
             continue;
         }
         for (size_t k = 0; k < sizeof(POU_KINDS) / sizeof(POU_KINDS[0]); k++) {
-            size_t kl = strlen(POU_KINDS[k].kw);
             if (ci_at(ln, len, 0, POU_KINDS[k].kw)) {
+                size_t kl = strlen(POU_KINDS[k].kw);
                 char next = kl < len ? up(ln[kl]) : ' ';
                 if (!is_alpha_(next) && !is_digit(next)) {
                     return &POU_KINDS[k];
