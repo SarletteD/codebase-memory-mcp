@@ -2823,7 +2823,6 @@ void handle_usages(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, Wal
                 usage.site_end_byte = ts_node_end_byte(node);
                 usage.start_line = ts_node_start_point(node).row + 1;
                 cbm_usages_push(&ctx->result->usages, ctx->arena, usage);
-
             }
         }
         return;
@@ -2885,6 +2884,5 @@ void handle_usages(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, Wal
         usage.start_line = ts_node_start_point(node).row + 1;
         st_annotate_member_usage(ctx, &usage, node);
         cbm_usages_push(&ctx->result->usages, ctx->arena, usage);
-
     }
 }

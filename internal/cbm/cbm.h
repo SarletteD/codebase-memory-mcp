@@ -225,9 +225,9 @@ typedef struct {
     bool is_abstract;
     bool is_test;
     bool is_entry_point;
-    bool has_enum_value;   // Field is an enum member whose integer value is known
-    bool is_enum_member;   // Field is a member of an enumeration TYPE (value may be unknown)
-    int64_t enum_value;    // explicit (":= 10") or implicit (previous + 1, first 0) value
+    bool has_enum_value; // Field is an enum member whose integer value is known
+    bool is_enum_member; // Field is a member of an enumeration TYPE (value may be unknown)
+    int64_t enum_value;  // explicit (":= 10") or implicit (previous + 1, first 0) value
     const char *structural_profile; // AST structural profile (arena-allocated) or NULL
     const char *body_tokens; // space-separated raw identifier tokens from body (arena) or NULL
     /* Rust only: raw trait path from the exact `impl Trait for Type` block

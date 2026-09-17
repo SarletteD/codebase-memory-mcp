@@ -286,11 +286,11 @@ const cbm_gbuf_node_t *cbm_st_resolve_member(cbm_tc_ns_t *ns, const cbm_registry
         const cbm_gbuf_node_t *f = field_of(gbuf, cur, seg[i]);
         char declared[CBM_SZ_512];
         /* The field's declared type means what it means in the FIELD's file. */
-        cur = f && f->file_path &&
-                      json_string_prop(f->properties_json, "return_type", declared,
-                                       sizeof(declared))
-                  ? resolve_type(&rc, f->file_path, declared)
-                  : NULL;
+        cur =
+            f && f->file_path &&
+                    json_string_prop(f->properties_json, "return_type", declared, sizeof(declared))
+                ? resolve_type(&rc, f->file_path, declared)
+                : NULL;
     }
     return cur ? field_of(gbuf, cur, usage->ref_name) : NULL;
 }

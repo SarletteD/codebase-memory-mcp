@@ -705,8 +705,8 @@ static const char ES_TC_LIBB_PROJ[] =
 /* Target file paths of the `edge_type` edges leaving the node `name` defined in
  * `file`. Returns the edge count, or -1 when that source node is not found. */
 static int es_tc_edge_targets(cbm_store_t *store, const char *project, const char *name,
-                              const char *file, const char *edge_type,
-                              char out[][ES_TC_PATH], int max) {
+                              const char *file, const char *edge_type, char out[][ES_TC_PATH],
+                              int max) {
     cbm_node_t *nodes = NULL;
     int count = 0;
     int64_t source_id = 0;
@@ -743,8 +743,8 @@ static int es_tc_edge_targets(cbm_store_t *store, const char *project, const cha
 
 /* Expect exactly one `edge_type` edge from (name, file), landing in target_file.
  * target_file NULL = expect none. Prints what was found on a mismatch. */
-static int es_tc_expect(cbm_store_t *store, const char *project, const char *name,
-                        const char *file, const char *edge_type, const char *target_file) {
+static int es_tc_expect(cbm_store_t *store, const char *project, const char *name, const char *file,
+                        const char *edge_type, const char *target_file) {
     char targets[8][ES_TC_PATH];
     int n = es_tc_edge_targets(store, project, name, file, edge_type, targets, 8);
     int ok = target_file ? (n == 1 && strcmp(targets[0], target_file) == 0) : (n == 0);
@@ -775,7 +775,8 @@ static int es_tc_namespace_fixture(bool parallel) {
         {"LibA/POUs/FB_Box.TcPOU", ES_TC_POU, "FB_Box", "FUNCTION_BLOCK FB_Box"},
         {"LibB/POUs/I_Event.TcIO", ES_TC_ITF, "I_Event", "INTERFACE I_Event"},
         {"LibB/POUs/I_Spec.TcIO", ES_TC_ITF, "I_Spec", "INTERFACE I_Spec EXTENDS Ns_A.I_Event"},
-        {"LibB/POUs/FB_Box.TcPOU", ES_TC_POU, "FB_Box", "FUNCTION_BLOCK FB_Box EXTENDS NS_a.FB_Box"},
+        {"LibB/POUs/FB_Box.TcPOU", ES_TC_POU, "FB_Box",
+         "FUNCTION_BLOCK FB_Box EXTENDS NS_a.FB_Box"},
         {"LibB/POUs/FB_Other.TcPOU", ES_TC_POU, "FB_Other",
          "FUNCTION_BLOCK FB_Other IMPLEMENTS Nope.I_Event, I_Spec"},
     };
@@ -953,7 +954,7 @@ static const char ES_TC_FB_DRAIN[] =
     "]]></Declaration>\n"                                         /* 44 */
     "      <Implementation>\n"                                    /* 45 */
     "        <ST><![CDATA[AssertEquals_UINT(Expected := E_ValveState.CLOSE, Actual := "
-    "_state);]]></ST>\n" /* 46 */
+    "_state);]]></ST>\n"        /* 46 */
     "      </Implementation>\n" /* 47 */
     "    </Method>\n"           /* 48 */
     "  </POU>\n"                /* 49 */
@@ -1001,19 +1002,20 @@ static const char ES_TC_DUP_ENUM_DECL[] = "{attribute 'qualified_only'}\n"
  * variable of that (undeclared in ST) type must resolve no member. */
 static const char ES_TC_FOREIGN_C[] = "struct T_Foreign {\n    int Depth;\n};\n";
 
-static const char ES_TC_FB_FOREIGN[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
-                                       "<TcPlcObject Version=\"1.1.0.1\">\n"
-                                       "  <POU Name=\"FB_Foreign\" Id=\"{1}\" SpecialFunc=\"None\">\n"
-                                       "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Foreign\n"
-                                       "VAR\n"
-                                       "\tforeign : T_Foreign;\n"
-                                       "END_VAR\n"
-                                       "]]></Declaration>\n"
-                                       "    <Implementation>\n"
-                                       "      <ST><![CDATA[foreign.Depth := 1;]]></ST>\n"
-                                       "    </Implementation>\n"
-                                       "  </POU>\n"
-                                       "</TcPlcObject>\n";
+static const char ES_TC_FB_FOREIGN[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+    "<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <POU Name=\"FB_Foreign\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+    "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Foreign\n"
+    "VAR\n"
+    "\tforeign : T_Foreign;\n"
+    "END_VAR\n"
+    "]]></Declaration>\n"
+    "    <Implementation>\n"
+    "      <ST><![CDATA[foreign.Depth := 1;]]></ST>\n"
+    "    </Implementation>\n"
+    "  </POU>\n"
+    "</TcPlcObject>\n";
 
 /* Same-file preference: two plain .st files in one library both declare T_Loc;
  * a reference in a.st binds a.st's T_Loc, never b.st's. */
@@ -1112,8 +1114,8 @@ static int es_tcm_cmp_str(const void *a, const void *b) {
 
 /* Every USAGE edge landing on a Type node, as sorted "src_label src_name@src_file -> target"
  * entries. Returns the entry count, or -1 on a store error. */
-static int es_tcm_type_usage_set(cbm_store_t *store, const char *project,
-                                 char out[][ES_TCM_ENTRY], int max) {
+static int es_tcm_type_usage_set(cbm_store_t *store, const char *project, char out[][ES_TCM_ENTRY],
+                                 int max) {
     cbm_edge_t *edges = NULL;
     int count = 0;
     if (cbm_store_find_edges_by_type(store, project, "USAGE", &edges, &count) != CBM_STORE_OK) {
@@ -1276,8 +1278,10 @@ TEST(es_twincat_dut_members_are_fields_under_type) {
         const char *name;
         const char *value;
         int line;
-    } members[] = {{"ONE_TIME_INIT", "\"enum_value\":0", 8}, {"INIT", "\"enum_value\":1", 9},
-                   {"OPEN", "\"enum_value\":2", 11},         {"CLOSE", "\"enum_value\":3", 12},
+    } members[] = {{"ONE_TIME_INIT", "\"enum_value\":0", 8},
+                   {"INIT", "\"enum_value\":1", 9},
+                   {"OPEN", "\"enum_value\":2", 11},
+                   {"CLOSE", "\"enum_value\":3", 12},
                    {"ERROR_LIMIT", "\"enum_value\":10", 13}};
     for (size_t i = 0; i < sizeof(members) / sizeof(members[0]); i++) {
         int64_t fid = es_tcm_node_id(store, lp.project, "Field", members[i].name, ES_TCM_ENUM_FILE);
@@ -1416,8 +1420,8 @@ static int es_tcm_member_usage_fixture(bool parallel, bool dup_enum) {
         failed += !es_tcm_expect_usage(store, sm, enum_t, "stateMachine->E_ValveState", 27, 5);
         failed += !es_tcm_expect_usage(store, tc, enum_t, "Test_Close->E_ValveState", 46, 1);
         failed += !es_tcm_expect_usage(store, fb_module, par_t, "FB_Drain module->T_Par", 6, 2);
-        failed += !es_tcm_expect_usage(store, fb_module, enum_t, "FB_Drain module->E_ValveState",
-                                       9, 1);
+        failed +=
+            !es_tcm_expect_usage(store, fb_module, enum_t, "FB_Drain module->E_ValveState", 9, 1);
     } else {
         /* LibM's same-named enum: its CLOSE is never a target of LibApp's references. */
         int64_t dup_close =

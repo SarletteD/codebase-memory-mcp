@@ -170,12 +170,11 @@ static int resolve_usage_edges(cbm_pipeline_ctx_t *ctx, cbm_tc_ns_t *tc_ns,
              * fallback rules (cbm_st_resolve_plain); the member target is exact.
              * Both are aggregated into one edge per pair with line/count and
              * emitted after the loop. */
-            cbm_st_usage_agg_add(agg, src,
-                                 cbm_st_resolve_plain(ctx->registry, ctx->gbuf, lang, module_qn,
-                                                      imp_keys, imp_vals, imp_count, usage),
-                                 cbm_st_resolve_member(tc_ns, ctx->registry, ctx->gbuf, rel, lang,
-                                                       usage),
-                                 usage);
+            cbm_st_usage_agg_add(
+                agg, src,
+                cbm_st_resolve_plain(ctx->registry, ctx->gbuf, lang, module_qn, imp_keys, imp_vals,
+                                     imp_count, usage),
+                cbm_st_resolve_member(tc_ns, ctx->registry, ctx->gbuf, rel, lang, usage), usage);
             continue;
         }
 
@@ -262,7 +261,6 @@ static int resolve_usage_edges(cbm_pipeline_ctx_t *ctx, cbm_tc_ns_t *tc_ns,
     resolved += cbm_st_usage_agg_flush(agg, ctx->gbuf);
     cbm_pipeline_lsp_reference_index_free(&reference_index);
     return resolved;
-
 }
 
 /* Resolve THROWS/RAISES edges for one file's extracted throws. */

@@ -7560,16 +7560,16 @@ static int st_enum_member_ok(CBMFileResult *r, const char *parent, const char *n
  * comma (which the grammar parses as an empty enumerator that must not become a
  * node). Plain .st: no base type is expressible, so the base defaults to INT. */
 TEST(st_enum_members_are_fields_with_values) {
-    CBMFileResult *r = extract("TYPE E_State :\n"                    /* 1 */
-                               "(\n"                                 /* 2 */
-                               "\tONE_TIME_INIT := 0,\n"             /* 3 */
-                               "\tINIT,\n"                           /* 4 */
-                               "\t(* comment between members *)\n"   /* 5 */
-                               "\tOPEN := 2,\n"                      /* 6 */
-                               "\tCLOSE,\n"                          /* 7 */
-                               "\tERROR_LIMIT := 10,\n"              /* 8 */
-                               ");\n"                                /* 9 */
-                               "END_TYPE\n",                         /* 10 */
+    CBMFileResult *r = extract("TYPE E_State :\n"                  /* 1 */
+                               "(\n"                               /* 2 */
+                               "\tONE_TIME_INIT := 0,\n"           /* 3 */
+                               "\tINIT,\n"                         /* 4 */
+                               "\t(* comment between members *)\n" /* 5 */
+                               "\tOPEN := 2,\n"                    /* 6 */
+                               "\tCLOSE,\n"                        /* 7 */
+                               "\tERROR_LIMIT := 10,\n"            /* 8 */
+                               ");\n"                              /* 9 */
+                               "END_TYPE\n",                       /* 10 */
                                CBM_LANG_ST, "t", "E_State.st");
     ASSERT_NOT_NULL(r);
     ASSERT_NOT_NULL(twincat_def(r, "Type", "E_State"));
@@ -7605,7 +7605,7 @@ TEST(st_enum_values_continue_after_negative_and_based_literals) {
 TEST(st_struct_fields_are_fields_with_declared_types) {
     CBMFileResult *r = extract("TYPE T_Par :\n"                                    /* 1 */
                                "STRUCT\n"                                          /* 2 */
-                               "\tNumberOfPulses : Vnd_Core.I_ParameterInteger;\n"  /* 3 */
+                               "\tNumberOfPulses : Vnd_Core.I_ParameterInteger;\n" /* 3 */
                                "\tInner : T_Inner;\n"                              /* 4 */
                                "\tArr : ARRAY [0..3] OF INT;\n"                    /* 5 */
                                "END_STRUCT;\n"                                     /* 6 */
@@ -7639,23 +7639,23 @@ TEST(st_struct_fields_are_fields_with_declared_types) {
 /* TwinCAT enums: pragmas before TYPE, the base type ") UINT;" the grammar
  * cannot read is recorded as the members' return_type, and lines are XML lines. */
 TEST(twincat_enum_members_carry_base_type_and_xml_lines) {
-    static const char XML[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"        /* 1 */
-                              "<TcPlcObject Version=\"1.1.0.1\">\n"                 /* 2 */
-                              "  <DUT Name=\"E_ValveState\" Id=\"{1}\">\n"          /* 3 */
+    static const char XML[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"             /* 1 */
+                              "<TcPlcObject Version=\"1.1.0.1\">\n"                      /* 2 */
+                              "  <DUT Name=\"E_ValveState\" Id=\"{1}\">\n"               /* 3 */
                               "    <Declaration><![CDATA[{attribute 'qualified_only'}\n" /* 4 */
-                              "{attribute 'strict'}\n"                              /* 5 */
-                              "TYPE E_ValveState :\n"                               /* 6 */
-                              "(\n"                                                 /* 7 */
-                              "\tONE_TIME_INIT := 0,\n"                             /* 8 */
-                              "\tINIT,\n"                                           /* 9 */
-                              "\tOPEN := 2,\n"                                      /* 10 */
-                              "\tCLOSE,\n"                                          /* 11 */
-                              "\tERROR_LIMIT := 10\n"                               /* 12 */
-                              ") UINT;\n"                                           /* 13 */
-                              "END_TYPE\n"                                          /* 14 */
-                              "]]></Declaration>\n"                                 /* 15 */
-                              "  </DUT>\n"                                          /* 16 */
-                              "</TcPlcObject>\n";                                   /* 17 */
+                              "{attribute 'strict'}\n"                                   /* 5 */
+                              "TYPE E_ValveState :\n"                                    /* 6 */
+                              "(\n"                                                      /* 7 */
+                              "\tONE_TIME_INIT := 0,\n"                                  /* 8 */
+                              "\tINIT,\n"                                                /* 9 */
+                              "\tOPEN := 2,\n"                                           /* 10 */
+                              "\tCLOSE,\n"                                               /* 11 */
+                              "\tERROR_LIMIT := 10\n"                                    /* 12 */
+                              ") UINT;\n"                                                /* 13 */
+                              "END_TYPE\n"                                               /* 14 */
+                              "]]></Declaration>\n"                                      /* 15 */
+                              "  </DUT>\n"                                               /* 16 */
+                              "</TcPlcObject>\n";                                        /* 17 */
     CBMFileResult *r = extract(XML, CBM_LANG_TWINCAT, "t", "E_ValveState.TcDUT");
     ASSERT_NOT_NULL(r);
     ASSERT_FALSE(r->parse_incomplete);
@@ -7684,12 +7684,12 @@ TEST(twincat_enum_members_carry_base_type_and_xml_lines) {
  * become Fields of the union Type. */
 TEST(twincat_union_members_are_fields) {
     static const char XML[] = "<?xml version=\"1.0\"?>\n<TcPlcObject>\n<DUT Name=\"U_Raw\">\n"
-                              "<Declaration><![CDATA[TYPE U_Raw :\n"      /* 4 */
-                              "UNION\n"                                    /* 5 */
-                              "\tWord : WORD;\n"                           /* 6 */
-                              "\tBytes : ARRAY [0..1] OF BYTE;\n"          /* 7 */
-                              "END_UNION\n"                                /* 8 */
-                              "END_TYPE\n"                                 /* 9 */
+                              "<Declaration><![CDATA[TYPE U_Raw :\n" /* 4 */
+                              "UNION\n"                              /* 5 */
+                              "\tWord : WORD;\n"                     /* 6 */
+                              "\tBytes : ARRAY [0..1] OF BYTE;\n"    /* 7 */
+                              "END_UNION\n"                          /* 8 */
+                              "END_TYPE\n"                           /* 9 */
                               "]]></Declaration>\n</DUT>\n</TcPlcObject>\n";
     CBMFileResult *r = extract(XML, CBM_LANG_TWINCAT, "t", "U_Raw.TcDUT");
     ASSERT_NOT_NULL(r);
@@ -7726,12 +7726,12 @@ static int st_usage_shape_ok(const CBMUsage *u, const char *qualifier, const cha
         fprintf(stderr, "  [ST-USAGE] missing usage\n");
         return 0;
     }
-    int ok = (int)u->start_line == line &&
-             ((qualifier == NULL && u->member_qualifier == NULL) ||
-              (qualifier && u->member_qualifier && strcmp(u->member_qualifier, qualifier) == 0)) &&
-             ((qualifier_type == NULL && u->qualifier_type == NULL) ||
-              (qualifier_type && u->qualifier_type &&
-               strcmp(u->qualifier_type, qualifier_type) == 0));
+    int ok =
+        (int)u->start_line == line &&
+        ((qualifier == NULL && u->member_qualifier == NULL) ||
+         (qualifier && u->member_qualifier && strcmp(u->member_qualifier, qualifier) == 0)) &&
+        ((qualifier_type == NULL && u->qualifier_type == NULL) ||
+         (qualifier_type && u->qualifier_type && strcmp(u->qualifier_type, qualifier_type) == 0));
     if (!ok) {
         fprintf(stderr, "  [ST-USAGE] %s: line=%u member=%d qualifier=%s type=%s\n", u->ref_name,
                 u->start_line, u->is_member_access,
@@ -7745,28 +7745,28 @@ static int st_usage_shape_ok(const CBMUsage *u, const char *qualifier, const cha
  * receiver's head is declared in an enclosing VAR block of the same POU, that
  * declared type. Every usage carries its 1-based line. */
 TEST(st_member_access_usage_records_qualifier_and_declared_type) {
-    CBMFileResult *r = extract("FUNCTION_BLOCK FB_X\n"                       /* 1 */
-                               "VAR_INPUT\n"                                 /* 2 */
-                               "\tinPar : T_Par;\n"                          /* 3 */
-                               "END_VAR\n"                                   /* 4 */
-                               "VAR\n"                                       /* 5 */
-                               "\t_par : T_Par;\n"                           /* 6 */
-                               "\t_state : E_State;\n"                       /* 7 */
-                               "\tarr : ARRAY [0..1] OF T_Inner;\n"          /* 8 */
-                               "END_VAR\n"                                   /* 9 */
-                               "METHOD stateMachine : BOOL\n"                /* 10 */
-                               "VAR\n"                                       /* 11 */
-                               "\tlocal : T_Inner;\n"                        /* 12 */
-                               "END_VAR\n"                                   /* 13 */
-                               "IF _state = E_State.CLOSE THEN\n"            /* 14 */
-                               "\t_par.NumberOfPulses := 1;\n"               /* 15 */
-                               "\tIF inPar.Inner.Depth > 0 THEN\n"           /* 16 */
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_X\n"                           /* 1 */
+                               "VAR_INPUT\n"                                     /* 2 */
+                               "\tinPar : T_Par;\n"                              /* 3 */
+                               "END_VAR\n"                                       /* 4 */
+                               "VAR\n"                                           /* 5 */
+                               "\t_par : T_Par;\n"                               /* 6 */
+                               "\t_state : E_State;\n"                           /* 7 */
+                               "\tarr : ARRAY [0..1] OF T_Inner;\n"              /* 8 */
+                               "END_VAR\n"                                       /* 9 */
+                               "METHOD stateMachine : BOOL\n"                    /* 10 */
+                               "VAR\n"                                           /* 11 */
+                               "\tlocal : T_Inner;\n"                            /* 12 */
+                               "END_VAR\n"                                       /* 13 */
+                               "IF _state = E_State.CLOSE THEN\n"                /* 14 */
+                               "\t_par.NumberOfPulses := 1;\n"                   /* 15 */
+                               "\tIF inPar.Inner.Depth > 0 THEN\n"               /* 16 */
                                "\t\tlocal.Depth := Vnd_Core.E_AlarmState.OFF;\n" /* 17 */
-                               "\tEND_IF\n"                                  /* 18 */
-                               "\tarr[0].Depth := 2;\n"                      /* 19 */
-                               "END_IF\n"                                    /* 20 */
-                               "END_METHOD\n"                                /* 21 */
-                               "END_FUNCTION_BLOCK\n",                       /* 22 */
+                               "\tEND_IF\n"                                      /* 18 */
+                               "\tarr[0].Depth := 2;\n"                          /* 19 */
+                               "END_IF\n"                                        /* 20 */
+                               "END_METHOD\n"                                    /* 21 */
+                               "END_FUNCTION_BLOCK\n",                           /* 22 */
                                CBM_LANG_ST, "t", "FB_X.st");
     ASSERT_NOT_NULL(r);
     ASSERT_FALSE(r->parse_incomplete);
@@ -7871,29 +7871,28 @@ TEST(twincat_enum_base_only_reaches_enum_members) {
 
 /* TwinCAT: usage lines are XML lines, like definitions. */
 TEST(twincat_usage_lines_are_xml_lines) {
-    static const char XML[] =
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"                /* 1 */
-        "<TcPlcObject Version=\"1.1.0.1\">\n"                         /* 2 */
-        "  <POU Name=\"FB_Drain\" Id=\"{1}\" SpecialFunc=\"None\">\n" /* 3 */
-        "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Drain\n"         /* 4 */
-        "VAR\n"                                                       /* 5 */
-        "\t_state : E_ValveState;\n"                                  /* 6 */
-        "END_VAR\n"                                                   /* 7 */
-        "]]></Declaration>\n"                                         /* 8 */
-        "    <Implementation>\n"                                      /* 9 */
-        "      <ST><![CDATA[]]></ST>\n"                               /* 10 */
-        "    </Implementation>\n"                                     /* 11 */
-        "    <Method Name=\"stateMachine\" Id=\"{2}\">\n"             /* 12 */
-        "      <Declaration><![CDATA[METHOD stateMachine : BOOL\n"    /* 13 */
-        "]]></Declaration>\n"                                         /* 14 */
-        "      <Implementation>\n"                                    /* 15 */
-        "        <ST><![CDATA[IF _state = E_ValveState.CLOSE THEN\n"  /* 16 */
-        "\t_state := E_ValveState.OPEN;\n"                            /* 17 */
-        "END_IF]]></ST>\n"                                            /* 18 */
-        "      </Implementation>\n"                                   /* 19 */
-        "    </Method>\n"                                             /* 20 */
-        "  </POU>\n"                                                  /* 21 */
-        "</TcPlcObject>\n";                                           /* 22 */
+    static const char XML[] = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"                /* 1 */
+                              "<TcPlcObject Version=\"1.1.0.1\">\n"                         /* 2 */
+                              "  <POU Name=\"FB_Drain\" Id=\"{1}\" SpecialFunc=\"None\">\n" /* 3 */
+                              "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Drain\n"         /* 4 */
+                              "VAR\n"                                                       /* 5 */
+                              "\t_state : E_ValveState;\n"                                  /* 6 */
+                              "END_VAR\n"                                                   /* 7 */
+                              "]]></Declaration>\n"                                         /* 8 */
+                              "    <Implementation>\n"                                      /* 9 */
+                              "      <ST><![CDATA[]]></ST>\n"                               /* 10 */
+                              "    </Implementation>\n"                                     /* 11 */
+                              "    <Method Name=\"stateMachine\" Id=\"{2}\">\n"             /* 12 */
+                              "      <Declaration><![CDATA[METHOD stateMachine : BOOL\n"    /* 13 */
+                              "]]></Declaration>\n"                                         /* 14 */
+                              "      <Implementation>\n"                                    /* 15 */
+                              "        <ST><![CDATA[IF _state = E_ValveState.CLOSE THEN\n"  /* 16 */
+                              "\t_state := E_ValveState.OPEN;\n"                            /* 17 */
+                              "END_IF]]></ST>\n"                                            /* 18 */
+                              "      </Implementation>\n"                                   /* 19 */
+                              "    </Method>\n"                                             /* 20 */
+                              "  </POU>\n"                                                  /* 21 */
+                              "</TcPlcObject>\n";                                           /* 22 */
     CBMFileResult *r = extract(XML, CBM_LANG_TWINCAT, "t", "FB_Drain.TcPOU");
     ASSERT_NOT_NULL(r);
     ASSERT_FALSE(r->parse_incomplete);

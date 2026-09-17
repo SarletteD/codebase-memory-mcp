@@ -1270,7 +1270,6 @@ static int register_and_link_def(cbm_pipeline_ctx_t *ctx, const CBMDefinition *d
         !cbm_st_is_dut_member_qn(ctx->gbuf, def->label, def->qualified_name)) {
         cbm_registry_add(ctx->registry, def->name, def->qualified_name, def->label);
         (*reg_entries)++;
-
     }
     char *file_qn = cbm_pipeline_fqn_compute(ctx->project_name, rel, "__file__");
     const cbm_gbuf_node_t *file_node = cbm_gbuf_find_by_qn(ctx->gbuf, file_qn);
@@ -2707,12 +2706,12 @@ static void resolve_file_usages(resolve_ctx_t *rc, resolve_worker_state_t *ws,
             continue;
         }
         if (st) {
-            cbm_st_usage_agg_add(agg, src,
-                                 cbm_st_resolve_plain(rc->registry, rc->main_gbuf, lang, module_qn,
-                                                      imp_keys, imp_vals, imp_count, usage),
-                                 cbm_st_resolve_member(rc->tc_ns, rc->registry, rc->main_gbuf, rel,
-                                                       lang, usage),
-                                 usage);
+            cbm_st_usage_agg_add(
+                agg, src,
+                cbm_st_resolve_plain(rc->registry, rc->main_gbuf, lang, module_qn, imp_keys,
+                                     imp_vals, imp_count, usage),
+                cbm_st_resolve_member(rc->tc_ns, rc->registry, rc->main_gbuf, rel, lang, usage),
+                usage);
             continue;
         }
         const cbm_gbuf_node_t *tgt = NULL;
@@ -2796,7 +2795,6 @@ static void resolve_file_usages(resolve_ctx_t *rc, resolve_worker_state_t *ws,
     cbm_pipeline_lsp_reference_index_free(&reference_index);
 }
 
-
 /* Resolve throws/raises for one file. */
 static void resolve_file_throws(resolve_ctx_t *rc, resolve_worker_state_t *ws,
                                 CBMFileResult *result, const char *rel, const char *module_qn,
@@ -2870,8 +2868,8 @@ static void resolve_file_rw(resolve_ctx_t *rc, resolve_worker_state_t *ws, CBMFi
 /* Resolve base_classes → INHERITS edges for one definition. */
 static void resolve_def_inherits(resolve_ctx_t *rc, resolve_worker_state_t *ws,
                                  const CBMDefinition *def, const cbm_gbuf_node_t *node,
-                                 const char *rel, CBMLanguage lang, const char *mq,
-                                 const char **ik, const char **iv, int ic) {
+                                 const char *rel, CBMLanguage lang, const char *mq, const char **ik,
+                                 const char **iv, int ic) {
     if (!def->base_classes) {
         return;
     }
@@ -3321,8 +3319,7 @@ static void resolve_worker(int worker_id, void *ctx_ptr) {
 
         /* ── INHERITS + DECORATES + IMPLEMENTS ──────────────────── */
         _ph_t0 = extract_now_ns();
-        resolve_file_semantic(rc, ws, result, rel, lang, module_qn, imp_keys, imp_vals,
-                              imp_count);
+        resolve_file_semantic(rc, ws, result, rel, lang, module_qn, imp_keys, imp_vals, imp_count);
         atomic_fetch_add_explicit(&rc->time_ns_semantic, extract_now_ns() - _ph_t0,
                                   memory_order_relaxed);
 

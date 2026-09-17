@@ -1051,7 +1051,6 @@ static void registry_visitor(const cbm_gbuf_node_t *node, void *userdata) {
     cbm_registry_add(seed->registry, node->name, node->qualified_name, node->label);
 }
 
-
 static void free_incremental_result_cache(CBMFileResult **cache, int count) {
     if (!cache) {
         return;

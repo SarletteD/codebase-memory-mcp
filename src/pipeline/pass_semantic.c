@@ -457,12 +457,11 @@ static void sem_process_def_edges(cbm_pipeline_ctx_t *ctx, const CBMDefinition *
         for (int b = 0; def->base_classes[b]; b++) {
             /* A qualified TwinCAT base resolves inside its library only — the same
              * short name often exists in several libraries (twin: pass_parallel.c). */
-            const char *base_qn =
-                cbm_tc_ns_applies(lang, def->base_classes[b])
-                    ? cbm_tc_ns_resolve_base(tc_ns, ctx->registry, ctx->gbuf, rel,
-                                             def->base_classes[b])
-                    : resolve_as_class(ctx->registry, def->base_classes[b], module_qn, imp_keys,
-                                       imp_vals, imp_count);
+            const char *base_qn = cbm_tc_ns_applies(lang, def->base_classes[b])
+                                      ? cbm_tc_ns_resolve_base(tc_ns, ctx->registry, ctx->gbuf, rel,
+                                                               def->base_classes[b])
+                                      : resolve_as_class(ctx->registry, def->base_classes[b],
+                                                         module_qn, imp_keys, imp_vals, imp_count);
             if (!base_qn) {
                 continue;
             }

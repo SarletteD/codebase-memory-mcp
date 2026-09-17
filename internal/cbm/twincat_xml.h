@@ -30,11 +30,11 @@ typedef struct {
 } CBMTwinCATEnumBase;
 
 typedef struct {
-    char *text;          /* assembled + normalized ST, NUL-terminated (heap) */
-    int len;             /* strlen(text) */
-    uint32_t *xml_line;  /* xml_line[i] = 1-based XML line of ST line i+1 (heap) */
-    uint32_t line_count; /* entries in xml_line */
-    uint32_t xml_lines;  /* line count of the XML file itself */
+    char *text;                     /* assembled + normalized ST, NUL-terminated (heap) */
+    int len;                        /* strlen(text) */
+    uint32_t *xml_line;             /* xml_line[i] = 1-based XML line of ST line i+1 (heap) */
+    uint32_t line_count;            /* entries in xml_line */
+    uint32_t xml_lines;             /* line count of the XML file itself */
     CBMTwinCATEnumBase *enum_bases; /* stripped enum base types (heap), may be NULL */
     uint32_t enum_base_count;
 } CBMTwinCATUnit;

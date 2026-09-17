@@ -861,12 +861,11 @@ static void pass_type_extends(TcBuf *out, const char *s, size_t n) {
 
 char *cbm_twincat_normalize(const char *src, int len, int *out_len) {
     static const TcPass PASSES[] = {
-        pass_pragma,       pass_union,         pass_struct_semi, pass_enum_base,
-        pass_at_address,
+        pass_pragma,       pass_union,        pass_struct_semi, pass_enum_base,  pass_at_address,
 
-        pass_reference_to, pass_var_stat,      pass_persistent, pass_and_then,
-        pass_arr_init,     pass_ctor_args,     pass_array_star, pass_str_len,
-        pass_pou_access,   pass_program_as_fb, pass_modifier,   pass_type_extends,
+        pass_reference_to, pass_var_stat,     pass_persistent,  pass_and_then,   pass_arr_init,
+        pass_ctor_args,    pass_array_star,   pass_str_len,     pass_pou_access, pass_program_as_fb,
+        pass_modifier,     pass_type_extends,
     };
     TcBuf cur = {0};
     tb_put(&cur, src ? src : "", (src && len > 0) ? (size_t)len : 0);

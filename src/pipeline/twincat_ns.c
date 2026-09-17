@@ -461,8 +461,7 @@ bool cbm_tc_ns_applies(CBMLanguage lang, const char *base) {
 }
 
 const char *cbm_tc_ns_resolve_base(cbm_tc_ns_t *ns, const cbm_registry_t *reg,
-                                   const cbm_gbuf_t *gbuf, const char *rel_path,
-                                   const char *base) {
+                                   const cbm_gbuf_t *gbuf, const char *rel_path, const char *base) {
     const char *dot = base ? strrchr(base, '.') : NULL;
     if (!ns || !reg || !gbuf || !rel_path || !dot || dot == base || dot[1] == '\0') {
         return NULL;
@@ -482,7 +481,8 @@ const char *cbm_tc_ns_resolve_base(cbm_tc_ns_t *ns, const cbm_registry_t *reg,
     const tc_project_t *src = project_of_file(ns, rel_path);
     const char *library = NULL;
     for (int i = 0; src && i < src->ref_count; i++) {
-        /* ST identifiers are case-insensitive: real projects spell `VND_Util.` next to `Vnd_Util`. */
+        /* ST identifiers are case-insensitive: real projects spell `VND_Util.` next to `Vnd_Util`.
+         */
         if (ci_equal_n(alias, alias_len, src->alias[i])) {
             library = src->target[i];
             break;
