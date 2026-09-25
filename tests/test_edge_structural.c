@@ -1700,13 +1700,26 @@ static const char ES_TCC_ITF_M[] =
     "    </Method>\n"
     "  </Itf>\n</TcPlcObject>\n";
 
+/* A third library that nobody references: its FB_Amb makes the bare name
+ * FB_Amb ambiguous for LibB (neither copy is in LibB). */
+static const char ES_TCC_LIBC_PROJ[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+    "<Project DefaultTargets=\"Build\" "
+    "xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">\n"
+    "  <PropertyGroup>\n"
+    "    <Name>LibC</Name>\n"
+    "    <Title>LibC</Title>\n"
+    "    <DefaultNamespace>Ns_C</DefaultNamespace>\n"
+    "  </PropertyGroup>\n"
+    "</Project>\n";
+
 static const char ES_TCC_USER[] =
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
     "  <POU Name=\"FB_User\" Id=\"{1}\" SpecialFunc=\"None\">\n"
     "    <Declaration><![CDATA[FUNCTION_BLOCK FB_User\nVAR\n"
     "\t_timer : Ns_A.FB_Timer;\n\t_derived : FB_Derived;\n\t_runner : I_Runner;\n"
     "\tHttpClient : FB_Http;\n\t_cyc : FB_CycA;\n\t_ext : Ns_Unknown.FB_Nowhere;\n"
-    "\t_chain : FB_ChainA;\n"
+    "\t_chain : FB_ChainA;\n\t_amb : FB_AmbDerived;\n"
     "END_VAR\n]]></Declaration>\n"
     "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
     "    <Method Name=\"CallTimer\" Id=\"{2}\">\n"
@@ -1751,6 +1764,10 @@ static const char ES_TCC_USER[] =
     "      <Declaration><![CDATA[METHOD CallChain : BOOL\n]]></Declaration>\n"
     "      <Implementation><ST><![CDATA[_chain.Tick();]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Method Name=\"CallAmbiguous\" Id=\"{12}\">\n"
+    "      <Declaration><![CDATA[METHOD CallAmbiguous : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_amb.Ping();]]></ST></Implementation>\n"
+    "    </Method>\n"
     "  </POU>\n</TcPlcObject>\n";
 
 static int es_tcc_typed_call_fixture(bool parallel) {
@@ -1760,6 +1777,7 @@ static int es_tcc_typed_call_fixture(bool parallel) {
     int n = 0;
     files[n++] = (ES_LangFile){"LibA/LibA.plcproj", ES_TC_LIBA_PROJ};
     files[n++] = (ES_LangFile){"LibB/LibB.plcproj", ES_TC_LIBB_PROJ};
+    files[n++] = (ES_LangFile){"LibC/LibC.plcproj", ES_TCC_LIBC_PROJ};
     /* Two-level EXTENDS chain beside an interface that declares the same method. */
     snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, "FB_ChainA",
              "FUNCTION_BLOCK FB_ChainA EXTENDS FB_ChainB IMPLEMENTS I_Tick");
@@ -1776,6 +1794,18 @@ static int es_tcc_typed_call_fixture(bool parallel) {
     snprintf(bodies[n], sizeof(bodies[n]), ES_TCC_ITF_M, "I_Tick", "INTERFACE I_Tick", "Tick",
              "Tick");
     files[n] = (ES_LangFile){"LibB/POUs/I_Tick.TcIO", bodies[n]};
+    n++;
+    /* FB_Amb exists in LibA (with Ping) and LibC, neither in LibB: ambiguous base. */
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TCC_POU_M, "FB_Amb", "FUNCTION_BLOCK FB_Amb", "Ping",
+             "Ping", "Ping");
+    files[n] = (ES_LangFile){"LibA/POUs/FB_Amb.TcPOU", bodies[n]};
+    n++;
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, "FB_Amb", "FUNCTION_BLOCK FB_Amb");
+    files[n] = (ES_LangFile){"LibC/POUs/FB_Amb.TcPOU", bodies[n]};
+    n++;
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, "FB_AmbDerived",
+             "FUNCTION_BLOCK FB_AmbDerived EXTENDS FB_Amb");
+    files[n] = (ES_LangFile){"LibB/POUs/FB_AmbDerived.TcPOU", bodies[n]};
     n++;
     files[n++] = (ES_LangFile){"LibA/POUs/FB_Timer.TcPOU", ES_TCC_TIMER};
     files[n++] = (ES_LangFile){"LibB/POUs/FB_Decoy.TcPOU", ES_TCC_DECOY};
@@ -1834,7 +1864,7 @@ static int es_tcc_typed_call_fixture(bool parallel) {
     /* Interface-typed receiver binds the interface's method. */
     failed += !es_tc_expect(store, p, "CallItf", user, "CALLS", "LibB/POUs/I_Runner.TcIO");
     failed += !es_tc_expect_strategy(store, p, "CallItf", user, "CALLS", "st_receiver_type");
-    /* Type known, method absent: no edge, not the decoy's Missing. */
+    /* Whole hierarchy resolved, method absent: no edge, not the decoy's Missing. */
     failed += !es_tc_expect(store, p, "CallMissing", user, "CALLS", NULL);
     /* A receiver variable named like an HTTP client library (HttpClient) must
      * not steer the #523 callee-name service bypass away from the exact ST
@@ -1852,6 +1882,10 @@ static int es_tcc_typed_call_fixture(bool parallel) {
      * FB_ChainA implements and which also declares Tick. */
     failed += !es_tc_expect(store, p, "CallChain", user, "CALLS", "LibB/POUs/FB_ChainC.TcPOU");
     failed += !es_tc_expect_strategy(store, p, "CallChain", user, "CALLS", "st_receiver_type");
+    /* A base that does not resolve (FB_Amb is ambiguous from LibB) leaves the
+     * hierarchy incomplete: generic resolver, not "no such method". */
+    failed += !es_tc_expect_none_with_strategy(store, p, "CallAmbiguous", user, "CALLS",
+                                               "st_receiver_type");
     /* Property read: the exact member edge only, no bare-name guess at the decoy. */
     char targets[8][ES_TC_PATH];
     int nt = es_tc_edge_targets(store, p, "ReadProp", user, "USAGE", targets, 8);

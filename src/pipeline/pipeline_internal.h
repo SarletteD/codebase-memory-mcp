@@ -381,9 +381,13 @@ const cbm_gbuf_node_t *cbm_st_resolve_member(cbm_tc_ns_t *ns, const cbm_registry
  * pass_parallel.c) consult this before the registry; FOUND and NOT_FOUND are
  * final, UNTYPED falls through. */
 typedef enum {
-    CBM_ST_CALL_UNTYPED = 0, /* no declared receiver type, or it does not resolve: generic path */
-    CBM_ST_CALL_FOUND,       /* *out_method is the exact Method */
-    CBM_ST_CALL_NOT_FOUND, /* receiver type resolved, no such method on it or its bases: no edge */
+    /* no declared receiver type, it does not resolve, or a base in its
+     * hierarchy does not (or the walk hit its cap) and the method was not
+     * found: generic path */
+    CBM_ST_CALL_UNTYPED = 0,
+    CBM_ST_CALL_FOUND, /* *out_method is the exact Method */
+    /* the whole hierarchy resolved and none of it has the method: no edge */
+    CBM_ST_CALL_NOT_FOUND,
 } cbm_st_call_status_t;
 cbm_st_call_status_t cbm_st_resolve_call(cbm_tc_ns_t *ns, const cbm_registry_t *reg,
                                          const cbm_gbuf_t *gbuf, const char *rel, CBMLanguage lang,

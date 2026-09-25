@@ -301,11 +301,9 @@ const cbm_gbuf_node_t *cbm_st_resolve_member(cbm_tc_ns_t *ns, const cbm_registry
     return owner ? field_of(gbuf, owner, usage->ref_name) : NULL;
 }
 
-/* Bases walked per lookup; deeper hierarchies are not real ST code. A
- * hierarchy that truncates against this cap before the method is found
- * reports CBM_ST_CALL_NOT_FOUND (no edge) exactly like a hierarchy that
- * never had the method at all — the walk cannot tell "not found yet" from
- * "not found ever" once it stops queuing further bases. */
+/* Bases queued per lookup, per side; deeper hierarchies are not real ST code.
+ * A base dropped at this cap makes the walk incomplete, so a miss falls back
+ * to the generic resolver instead of claiming the method does not exist. */
 #define ST_MAX_BASES 32
 
 /* Next base name in a JSON string array starting at *p ("[\"A\",\"B\"]"),
@@ -334,6 +332,7 @@ typedef struct {
     const cbm_gbuf_node_t *itf[ST_MAX_BASES];   /* Interface bases + their bases */
     int nchain;
     int nitf;
+    bool complete; /* every base resolved and none was dropped at the cap */
 } st_walk_t;
 
 static bool walk_seen(const st_walk_t *w, const cbm_gbuf_node_t *n) {
@@ -368,9 +367,21 @@ static void walk_queue_bases(const st_resolve_ctx_t *rc, st_walk_t *w, const cbm
     }
     const char *p = bases + strlen("\"base_classes\":[");
     char base[CBM_SZ_512];
-    while (p < end && next_base(&p, base, sizeof(base))) {
+    while (p < end) {
+        if (!next_base(&p, base, sizeof(base))) {
+            /* A quote still inside the list means a name too long for `base`. */
+            const char *q = strchr(p, '"');
+            if (q && q < end) {
+                w->complete = false;
+            }
+            break;
+        }
         const cbm_gbuf_node_t *b = t->file_path ? resolve_type(rc, t->file_path, base) : NULL;
-        if (!b || walk_seen(w, b)) {
+        if (!b) {
+            w->complete = false;
+            continue;
+        }
+        if (walk_seen(w, b)) {
             continue;
         }
         bool is_itf = itf_side || (b->label && strcmp(b->label, "Interface") == 0);
@@ -378,6 +389,8 @@ static void walk_queue_bases(const st_resolve_ctx_t *rc, st_walk_t *w, const cbm
             w->itf[w->nitf++] = b;
         } else if (!is_itf && w->nchain < ST_MAX_BASES) {
             w->chain[w->nchain++] = b;
+        } else {
+            w->complete = false;
         }
     }
 }
@@ -397,12 +410,15 @@ static const cbm_gbuf_node_t *own_method(const cbm_gbuf_t *gbuf, const cbm_gbuf_
 }
 
 /* The Method `name` on `owner` or its bases: the EXTENDS chain breadth-first,
- * then the interfaces. An Interface owner is its own chain. */
+ * then the interfaces. An Interface owner is its own chain. *complete tells a
+ * miss over the whole hierarchy apart from one that could not see all of it. */
 static const cbm_gbuf_node_t *method_of_type(const st_resolve_ctx_t *rc,
-                                             const cbm_gbuf_node_t *owner, const char *name) {
+                                             const cbm_gbuf_node_t *owner, const char *name,
+                                             bool *complete) {
     st_walk_t w;
     w.nchain = 0;
     w.nitf = 0;
+    w.complete = true;
     w.chain[w.nchain++] = owner;
     for (int i = 0; i < w.nchain; i++) {
         const cbm_gbuf_node_t *m = own_method(rc->gbuf, w.chain[i], name);
@@ -418,6 +434,7 @@ static const cbm_gbuf_node_t *method_of_type(const st_resolve_ctx_t *rc,
         }
         walk_queue_bases(rc, &w, w.itf[i], true);
     }
+    *complete = w.complete;
     return NULL;
 }
 
@@ -440,8 +457,12 @@ cbm_st_call_status_t cbm_st_resolve_call(cbm_tc_ns_t *ns, const cbm_registry_t *
     if (!owner) {
         return CBM_ST_CALL_UNTYPED;
     }
-    *out_method = method_of_type(&rc, owner, leaf);
-    return *out_method ? CBM_ST_CALL_FOUND : CBM_ST_CALL_NOT_FOUND;
+    bool complete = true;
+    *out_method = method_of_type(&rc, owner, leaf, &complete);
+    if (*out_method) {
+        return CBM_ST_CALL_FOUND;
+    }
+    return complete ? CBM_ST_CALL_NOT_FOUND : CBM_ST_CALL_UNTYPED;
 }
 
 /* ── Occurrence aggregation ─────────────────────────────────────────────── */
