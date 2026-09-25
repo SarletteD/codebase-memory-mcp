@@ -1768,6 +1768,10 @@ static const char ES_TCC_USER[] =
     "      <Declaration><![CDATA[METHOD CallAmbiguous : BOOL\n]]></Declaration>\n"
     "      <Implementation><ST><![CDATA[_amb.Ping();]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Method Name=\"CallLower\" Id=\"{13}\">\n"
+    "      <Declaration><![CDATA[METHOD CallLower : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_timer.start();]]></ST></Implementation>\n"
+    "    </Method>\n"
     "  </POU>\n</TcPlcObject>\n";
 
 static int es_tcc_typed_call_fixture(bool parallel) {
@@ -1886,6 +1890,9 @@ static int es_tcc_typed_call_fixture(bool parallel) {
      * hierarchy incomplete: generic resolver, not "no such method". */
     failed += !es_tc_expect_none_with_strategy(store, p, "CallAmbiguous", user, "CALLS",
                                                "st_receiver_type");
+    /* ST identifiers are case-insensitive: `start` binds METHOD Start. */
+    failed += !es_tc_expect(store, p, "CallLower", user, "CALLS", "LibA/POUs/FB_Timer.TcPOU");
+    failed += !es_tc_expect_strategy(store, p, "CallLower", user, "CALLS", "st_receiver_type");
     /* Property read: the exact member edge only, no bare-name guess at the decoy. */
     char targets[8][ES_TC_PATH];
     int nt = es_tc_edge_targets(store, p, "ReadProp", user, "USAGE", targets, 8);

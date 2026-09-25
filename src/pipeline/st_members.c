@@ -395,7 +395,21 @@ static void walk_queue_bases(const st_resolve_ctx_t *rc, st_walk_t *w, const cbm
     }
 }
 
-/* The Method `name` declared directly on `t`, or NULL. */
+/* ASCII case-insensitive equality; ST identifiers are ASCII. */
+static bool ci_equal(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char x = (*a >= 'a' && *a <= 'z') ? (char)(*a - 'a' + 'A') : *a;
+        char y = (*b >= 'a' && *b <= 'z') ? (char)(*b - 'a' + 'A') : *b;
+        if (x != y) {
+            return false;
+        }
+    }
+    return *a == *b;
+}
+
+/* The Method `name` declared directly on `t`, or NULL. ST identifiers are
+ * case-insensitive, so a miss on the exact qualified name retries over t's
+ * DEFINES_METHOD edges by name. */
 static const cbm_gbuf_node_t *own_method(const cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *t,
                                          const char *name) {
     char qn[CBM_SZ_1K];
@@ -403,6 +417,16 @@ static const cbm_gbuf_node_t *own_method(const cbm_gbuf_t *gbuf, const cbm_gbuf_
     if (w > 0 && (size_t)w < sizeof(qn)) {
         const cbm_gbuf_node_t *m = cbm_gbuf_find_by_qn(gbuf, qn);
         if (m && m->label && strcmp(m->label, "Method") == 0) {
+            return m;
+        }
+    }
+    const cbm_gbuf_edge_t **edges = NULL;
+    int count = 0;
+    cbm_gbuf_find_edges_by_source_type(gbuf, t->id, "DEFINES_METHOD", &edges, &count);
+    for (int i = 0; i < count; i++) {
+        const cbm_gbuf_node_t *m = cbm_gbuf_find_by_id(gbuf, edges[i]->target_id);
+        if (m && m->name && m->label && strcmp(m->label, "Method") == 0 &&
+            ci_equal(m->name, name)) {
             return m;
         }
     }
