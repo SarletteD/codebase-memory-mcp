@@ -9065,8 +9065,9 @@ TEST(extract_walk_truncated_when_a_node_budget_is_set) {
 
 static const CBMCall *st_call_named(const CBMFileResult *r, const char *callee) {
     for (int i = 0; i < r->calls.count; i++) {
-        if (r->calls.items[i].callee_name && strcmp(r->calls.items[i].callee_name, callee) == 0)
+        if (r->calls.items[i].callee_name && strcmp(r->calls.items[i].callee_name, callee) == 0) {
             return &r->calls.items[i];
+        }
     }
     return NULL;
 }

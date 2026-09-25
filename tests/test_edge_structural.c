@@ -1700,6 +1700,13 @@ static const char ES_TCC_ITF_M[] =
     "    </Method>\n"
     "  </Itf>\n</TcPlcObject>\n";
 
+/* An interface without methods of its own: name, declaration header. */
+static const char ES_TCC_ITF_EMPTY[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <Itf Name=\"%s\" Id=\"{1}\">\n"
+    "    <Declaration><![CDATA[%s\n]]></Declaration>\n"
+    "  </Itf>\n</TcPlcObject>\n";
+
 /* A third library that nobody references: its FB_Amb makes the bare name
  * FB_Amb ambiguous for LibB (neither copy is in LibB). */
 static const char ES_TCC_LIBC_PROJ[] =
@@ -1719,7 +1726,7 @@ static const char ES_TCC_USER[] =
     "    <Declaration><![CDATA[FUNCTION_BLOCK FB_User\nVAR\n"
     "\t_timer : Ns_A.FB_Timer;\n\t_derived : FB_Derived;\n\t_runner : I_Runner;\n"
     "\tHttpClient : FB_Http;\n\t_cyc : FB_CycA;\n\t_ext : Ns_Unknown.FB_Nowhere;\n"
-    "\t_chain : FB_ChainA;\n\t_amb : FB_AmbDerived;\n"
+    "\t_chain : FB_ChainA;\n\t_amb : FB_AmbDerived;\n\t_xd : FB_XDerived;\n\t_sub : I_Sub;\n"
     "END_VAR\n]]></Declaration>\n"
     "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
     "    <Method Name=\"CallTimer\" Id=\"{2}\">\n"
@@ -1772,6 +1779,18 @@ static const char ES_TCC_USER[] =
     "      <Declaration><![CDATA[METHOD CallLower : BOOL\n]]></Declaration>\n"
     "      <Implementation><ST><![CDATA[_timer.start();]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Method Name=\"CallCrossLib\" Id=\"{14}\">\n"
+    "      <Declaration><![CDATA[METHOD CallCrossLib : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_xd.Arm();]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "    <Method Name=\"CallSubItf\" Id=\"{15}\">\n"
+    "      <Declaration><![CDATA[METHOD CallSubItf : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_sub.Fire();]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "    <Method Name=\"CallNoVar\" Id=\"{16}\">\n"
+    "      <Declaration><![CDATA[METHOD CallNoVar : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[GVL_X.obj.Start();]]></ST></Implementation>\n"
+    "    </Method>\n"
     "  </POU>\n</TcPlcObject>\n";
 
 static int es_tcc_typed_call_fixture(bool parallel) {
@@ -1810,6 +1829,19 @@ static int es_tcc_typed_call_fixture(bool parallel) {
     snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, "FB_AmbDerived",
              "FUNCTION_BLOCK FB_AmbDerived EXTENDS FB_Amb");
     files[n] = (ES_LangFile){"LibB/POUs/FB_AmbDerived.TcPOU", bodies[n]};
+    n++;
+    /* Base in LibA, reached from LibB only through the .plcproj alias. */
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TCC_POU_M, "FB_TimerBase",
+             "FUNCTION_BLOCK FB_TimerBase", "Arm", "Arm", "Arm");
+    files[n] = (ES_LangFile){"LibA/POUs/FB_TimerBase.TcPOU", bodies[n]};
+    n++;
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, "FB_XDerived",
+             "FUNCTION_BLOCK FB_XDerived EXTENDS Ns_A.FB_TimerBase");
+    files[n] = (ES_LangFile){"LibB/POUs/FB_XDerived.TcPOU", bodies[n]};
+    n++;
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TCC_ITF_EMPTY, "I_Sub",
+             "INTERFACE I_Sub EXTENDS I_Runner");
+    files[n] = (ES_LangFile){"LibB/POUs/I_Sub.TcIO", bodies[n]};
     n++;
     files[n++] = (ES_LangFile){"LibA/POUs/FB_Timer.TcPOU", ES_TCC_TIMER};
     files[n++] = (ES_LangFile){"LibB/POUs/FB_Decoy.TcPOU", ES_TCC_DECOY};
@@ -1893,6 +1925,16 @@ static int es_tcc_typed_call_fixture(bool parallel) {
     /* ST identifiers are case-insensitive: `start` binds METHOD Start. */
     failed += !es_tc_expect(store, p, "CallLower", user, "CALLS", "LibA/POUs/FB_Timer.TcPOU");
     failed += !es_tc_expect_strategy(store, p, "CallLower", user, "CALLS", "st_receiver_type");
+    /* A qualified base resolves in the owner's file, through LibB's alias. */
+    failed +=
+        !es_tc_expect(store, p, "CallCrossLib", user, "CALLS", "LibA/POUs/FB_TimerBase.TcPOU");
+    failed += !es_tc_expect_strategy(store, p, "CallCrossLib", user, "CALLS", "st_receiver_type");
+    /* Interface EXTENDS interface: the method lives on the base interface. */
+    failed += !es_tc_expect(store, p, "CallSubItf", user, "CALLS", "LibB/POUs/I_Runner.TcIO");
+    failed += !es_tc_expect_strategy(store, p, "CallSubItf", user, "CALLS", "st_receiver_type");
+    /* A receiver head without a VAR declaration keeps the generic behaviour. */
+    failed +=
+        !es_tc_expect_none_with_strategy(store, p, "CallNoVar", user, "CALLS", "st_receiver_type");
     /* Property read: the exact member edge only, no bare-name guess at the decoy. */
     char targets[8][ES_TC_PATH];
     int nt = es_tc_edge_targets(store, p, "ReadProp", user, "USAGE", targets, 8);
