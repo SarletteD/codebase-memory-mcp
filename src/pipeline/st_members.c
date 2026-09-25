@@ -325,47 +325,98 @@ static bool next_base(const char **p, char *out, size_t out_size) {
     return true;
 }
 
-/* The Method `name` on `owner` or, breadth-first, on its base_classes. */
-static const cbm_gbuf_node_t *method_of_type(const st_resolve_ctx_t *rc,
-                                             const cbm_gbuf_node_t *owner, const char *name) {
-    const cbm_gbuf_node_t *queue[ST_MAX_BASES];
-    int head = 0;
-    int tail = 0;
-    queue[tail++] = owner;
-    while (head < tail) {
-        const cbm_gbuf_node_t *t = queue[head++];
-        char qn[CBM_SZ_1K];
-        int w = snprintf(qn, sizeof(qn), "%s.%s", t->qualified_name, name);
-        if (w > 0 && (size_t)w < sizeof(qn)) {
-            const cbm_gbuf_node_t *m = cbm_gbuf_find_by_qn(rc->gbuf, qn);
-            if (m && m->label && strcmp(m->label, "Method") == 0) {
-                return m;
-            }
+/* The types one method lookup visits. base_classes mixes EXTENDS and
+ * IMPLEMENTS names, so they are split: the owner's EXTENDS chain is searched
+ * before any interface, and a concrete receiver binds the implementation
+ * rather than the contract that merely declares the method. */
+typedef struct {
+    const cbm_gbuf_node_t *chain[ST_MAX_BASES]; /* owner + non-Interface bases */
+    const cbm_gbuf_node_t *itf[ST_MAX_BASES];   /* Interface bases + their bases */
+    int nchain;
+    int nitf;
+} st_walk_t;
+
+static bool walk_seen(const st_walk_t *w, const cbm_gbuf_node_t *n) {
+    for (int i = 0; i < w->nchain; i++) {
+        if (w->chain[i] == n) {
+            return true;
         }
-        /* base_classes is written by append_json_str_array (pass_definitions.c
-         * / pass_parallel.c build_def_props): plain `,"base_classes":["A","B"]`,
-         * no escaping. Scanning it with strstr/strchr instead of a JSON parser
-         * relies on that — a base name never carries a quote or bracket, which
-         * holds for every ST identifier (is_plain_type_name's character set,
-         * plus the dots a qualified base contributes). */
-        const char *bases =
-            t->properties_json ? strstr(t->properties_json, "\"base_classes\":[") : NULL;
-        const char *end = bases ? strchr(bases, ']') : NULL;
-        if (!bases || !end) {
+    }
+    for (int i = 0; i < w->nitf; i++) {
+        if (w->itf[i] == n) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Queue the bases of `t`, each resolved in t's own file. Below an interface
+ * everything stays on the interface side. */
+static void walk_queue_bases(const st_resolve_ctx_t *rc, st_walk_t *w, const cbm_gbuf_node_t *t,
+                             bool itf_side) {
+    /* base_classes is written by append_json_str_array (pass_definitions.c
+     * / pass_parallel.c build_def_props): plain `,"base_classes":["A","B"]`,
+     * no escaping. Scanning it with strstr/strchr instead of a JSON parser
+     * relies on that — a base name never carries a quote or bracket, which
+     * holds for every ST identifier (is_plain_type_name's character set,
+     * plus the dots a qualified base contributes). */
+    const char *bases =
+        t->properties_json ? strstr(t->properties_json, "\"base_classes\":[") : NULL;
+    const char *end = bases ? strchr(bases, ']') : NULL;
+    if (!bases || !end) {
+        return;
+    }
+    const char *p = bases + strlen("\"base_classes\":[");
+    char base[CBM_SZ_512];
+    while (p < end && next_base(&p, base, sizeof(base))) {
+        const cbm_gbuf_node_t *b = t->file_path ? resolve_type(rc, t->file_path, base) : NULL;
+        if (!b || walk_seen(w, b)) {
             continue;
         }
-        const char *p = bases + strlen("\"base_classes\":[");
-        char base[CBM_SZ_512];
-        while (p < end && next_base(&p, base, sizeof(base))) {
-            const cbm_gbuf_node_t *b = t->file_path ? resolve_type(rc, t->file_path, base) : NULL;
-            bool seen = false;
-            for (int i = 0; b && i < tail; i++) {
-                seen = seen || queue[i] == b;
-            }
-            if (b && !seen && tail < ST_MAX_BASES) {
-                queue[tail++] = b;
-            }
+        bool is_itf = itf_side || (b->label && strcmp(b->label, "Interface") == 0);
+        if (is_itf && w->nitf < ST_MAX_BASES) {
+            w->itf[w->nitf++] = b;
+        } else if (!is_itf && w->nchain < ST_MAX_BASES) {
+            w->chain[w->nchain++] = b;
         }
+    }
+}
+
+/* The Method `name` declared directly on `t`, or NULL. */
+static const cbm_gbuf_node_t *own_method(const cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *t,
+                                         const char *name) {
+    char qn[CBM_SZ_1K];
+    int w = snprintf(qn, sizeof(qn), "%s.%s", t->qualified_name, name);
+    if (w > 0 && (size_t)w < sizeof(qn)) {
+        const cbm_gbuf_node_t *m = cbm_gbuf_find_by_qn(gbuf, qn);
+        if (m && m->label && strcmp(m->label, "Method") == 0) {
+            return m;
+        }
+    }
+    return NULL;
+}
+
+/* The Method `name` on `owner` or its bases: the EXTENDS chain breadth-first,
+ * then the interfaces. An Interface owner is its own chain. */
+static const cbm_gbuf_node_t *method_of_type(const st_resolve_ctx_t *rc,
+                                             const cbm_gbuf_node_t *owner, const char *name) {
+    st_walk_t w;
+    w.nchain = 0;
+    w.nitf = 0;
+    w.chain[w.nchain++] = owner;
+    for (int i = 0; i < w.nchain; i++) {
+        const cbm_gbuf_node_t *m = own_method(rc->gbuf, w.chain[i], name);
+        if (m) {
+            return m;
+        }
+        walk_queue_bases(rc, &w, w.chain[i], false);
+    }
+    for (int i = 0; i < w.nitf; i++) {
+        const cbm_gbuf_node_t *m = own_method(rc->gbuf, w.itf[i], name);
+        if (m) {
+            return m;
+        }
+        walk_queue_bases(rc, &w, w.itf[i], true);
     }
     return NULL;
 }

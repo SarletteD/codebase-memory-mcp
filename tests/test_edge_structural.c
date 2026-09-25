@@ -1621,6 +1621,10 @@ static const char ES_TCC_DECOY[] =
     "      <Declaration><![CDATA[METHOD Nope : BOOL\n]]></Declaration>\n"
     "      <Implementation><ST><![CDATA[Nope := TRUE;]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Method Name=\"Tick\" Id=\"{8}\">\n"
+    "      <Declaration><![CDATA[METHOD Tick : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[Tick := TRUE;]]></ST></Implementation>\n"
+    "    </Method>\n"
     "    <Property Name=\"Elapsed\" Id=\"{9}\">\n"
     "      <Declaration><![CDATA[PROPERTY Elapsed : TIME\n]]></Declaration>\n"
     "      <Get Name=\"Get\" Id=\"{10}\">\n"
@@ -1674,12 +1678,35 @@ static const char ES_TCC_CYC_B[] =
     "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
     "  </POU>\n</TcPlcObject>\n";
 
+/* A function block with one method: name, declaration header, method name x3. */
+static const char ES_TCC_POU_M[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <POU Name=\"%s\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+    "    <Declaration><![CDATA[%s\nVAR\nEND_VAR\n]]></Declaration>\n"
+    "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
+    "    <Method Name=\"%s\" Id=\"{2}\">\n"
+    "      <Declaration><![CDATA[METHOD %s : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[%s := TRUE;]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "  </POU>\n</TcPlcObject>\n";
+
+/* An interface with one method: name, declaration header, method name x2. */
+static const char ES_TCC_ITF_M[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <Itf Name=\"%s\" Id=\"{1}\">\n"
+    "    <Declaration><![CDATA[%s\n]]></Declaration>\n"
+    "    <Method Name=\"%s\" Id=\"{2}\">\n"
+    "      <Declaration><![CDATA[METHOD %s : BOOL\n]]></Declaration>\n"
+    "    </Method>\n"
+    "  </Itf>\n</TcPlcObject>\n";
+
 static const char ES_TCC_USER[] =
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
     "  <POU Name=\"FB_User\" Id=\"{1}\" SpecialFunc=\"None\">\n"
     "    <Declaration><![CDATA[FUNCTION_BLOCK FB_User\nVAR\n"
     "\t_timer : Ns_A.FB_Timer;\n\t_derived : FB_Derived;\n\t_runner : I_Runner;\n"
     "\tHttpClient : FB_Http;\n\t_cyc : FB_CycA;\n\t_ext : Ns_Unknown.FB_Nowhere;\n"
+    "\t_chain : FB_ChainA;\n"
     "END_VAR\n]]></Declaration>\n"
     "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
     "    <Method Name=\"CallTimer\" Id=\"{2}\">\n"
@@ -1720,15 +1747,36 @@ static const char ES_TCC_USER[] =
     "</Declaration>\n"
     "      <Implementation><ST><![CDATA[b := _timer.Started;]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Method Name=\"CallChain\" Id=\"{11}\">\n"
+    "      <Declaration><![CDATA[METHOD CallChain : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_chain.Tick();]]></ST></Implementation>\n"
+    "    </Method>\n"
     "  </POU>\n</TcPlcObject>\n";
 
 static int es_tcc_typed_call_fixture(bool parallel) {
-    static char names[ES_TC_PAD_FILES + 12][ES_TC_PATH];
-    static char bodies[ES_TC_PAD_FILES + 12][1024];
-    ES_LangFile files[ES_TC_PAD_FILES + 12];
+    static char names[ES_TC_PAD_FILES + 32][ES_TC_PATH];
+    static char bodies[ES_TC_PAD_FILES + 32][1024];
+    ES_LangFile files[ES_TC_PAD_FILES + 32];
     int n = 0;
     files[n++] = (ES_LangFile){"LibA/LibA.plcproj", ES_TC_LIBA_PROJ};
     files[n++] = (ES_LangFile){"LibB/LibB.plcproj", ES_TC_LIBB_PROJ};
+    /* Two-level EXTENDS chain beside an interface that declares the same method. */
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, "FB_ChainA",
+             "FUNCTION_BLOCK FB_ChainA EXTENDS FB_ChainB IMPLEMENTS I_Tick");
+    files[n] = (ES_LangFile){"LibB/POUs/FB_ChainA.TcPOU", bodies[n]};
+    n++;
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, "FB_ChainB",
+             "FUNCTION_BLOCK FB_ChainB EXTENDS FB_ChainC");
+    files[n] = (ES_LangFile){"LibB/POUs/FB_ChainB.TcPOU", bodies[n]};
+    n++;
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TCC_POU_M, "FB_ChainC", "FUNCTION_BLOCK FB_ChainC",
+             "Tick", "Tick", "Tick");
+    files[n] = (ES_LangFile){"LibB/POUs/FB_ChainC.TcPOU", bodies[n]};
+    n++;
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TCC_ITF_M, "I_Tick", "INTERFACE I_Tick", "Tick",
+             "Tick");
+    files[n] = (ES_LangFile){"LibB/POUs/I_Tick.TcIO", bodies[n]};
+    n++;
     files[n++] = (ES_LangFile){"LibA/POUs/FB_Timer.TcPOU", ES_TCC_TIMER};
     files[n++] = (ES_LangFile){"LibB/POUs/FB_Decoy.TcPOU", ES_TCC_DECOY};
     files[n++] = (ES_LangFile){"LibB/POUs/FB_Http.TcPOU", ES_TCC_HTTP};
@@ -1800,6 +1848,10 @@ static int es_tcc_typed_call_fixture(bool parallel) {
      * instead of dropping the call outright. */
     failed += !es_tc_expect_none_with_strategy(store, p, "CallUntyped", user, "CALLS",
                                                "st_receiver_type");
+    /* The EXTENDS chain (FB_ChainB -> FB_ChainC) wins over I_Tick, which
+     * FB_ChainA implements and which also declares Tick. */
+    failed += !es_tc_expect(store, p, "CallChain", user, "CALLS", "LibB/POUs/FB_ChainC.TcPOU");
+    failed += !es_tc_expect_strategy(store, p, "CallChain", user, "CALLS", "st_receiver_type");
     /* Property read: the exact member edge only, no bare-name guess at the decoy. */
     char targets[8][ES_TC_PATH];
     int nt = es_tc_edge_targets(store, p, "ReadProp", user, "USAGE", targets, 8);

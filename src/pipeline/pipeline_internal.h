@@ -376,9 +376,10 @@ const cbm_gbuf_node_t *cbm_st_resolve_member(cbm_tc_ns_t *ns, const cbm_registry
                                              const cbm_gbuf_t *gbuf, const char *rel,
                                              CBMLanguage lang, const CBMUsage *usage);
 /* Structured Text call through a declared variable (`_timer.Start()`): the
- * Method of the receiver's declared type or one of its EXTENDS bases. Both
- * call venues (pass_calls.c, pass_parallel.c) consult this before the
- * registry; FOUND and NOT_FOUND are final, UNTYPED falls through. */
+ * Method of the receiver's declared type, its EXTENDS chain, or failing that
+ * an interface in its hierarchy. Both call venues (pass_calls.c,
+ * pass_parallel.c) consult this before the registry; FOUND and NOT_FOUND are
+ * final, UNTYPED falls through. */
 typedef enum {
     CBM_ST_CALL_UNTYPED = 0, /* no declared receiver type, or it does not resolve: generic path */
     CBM_ST_CALL_FOUND,       /* *out_method is the exact Method */
