@@ -1584,6 +1584,13 @@ static const char ES_TCC_TIMER[] =
     "      <Declaration><![CDATA[METHOD Start : BOOL\n]]></Declaration>\n"
     "      <Implementation><ST><![CDATA[Start := TRUE;]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Property Name=\"Elapsed\" Id=\"{9}\">\n"
+    "      <Declaration><![CDATA[PROPERTY Elapsed : TIME\n]]></Declaration>\n"
+    "      <Get Name=\"Get\" Id=\"{10}\">\n"
+    "        <Declaration><![CDATA[VAR\nEND_VAR\n]]></Declaration>\n"
+    "        <Implementation><ST><![CDATA[Elapsed := T#0S;]]></ST></Implementation>\n"
+    "      </Get>\n"
+    "    </Property>\n"
     "  </POU>\n</TcPlcObject>\n";
 
 /* Same method names as everything the user calls: the generic resolver's decoy. */
@@ -1613,6 +1620,13 @@ static const char ES_TCC_DECOY[] =
     "STRING;\nEND_VAR\n]]></Declaration>\n"
     "      <Implementation><ST><![CDATA[SendRequest := TRUE;]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Property Name=\"Elapsed\" Id=\"{9}\">\n"
+    "      <Declaration><![CDATA[PROPERTY Elapsed : TIME\n]]></Declaration>\n"
+    "      <Get Name=\"Get\" Id=\"{10}\">\n"
+    "        <Declaration><![CDATA[VAR\nEND_VAR\n]]></Declaration>\n"
+    "        <Implementation><ST><![CDATA[Elapsed := T#0S;]]></ST></Implementation>\n"
+    "      </Get>\n"
+    "    </Property>\n"
     "  </POU>\n</TcPlcObject>\n";
 
 /* Decoy for the HTTP-service-pattern-named receiver check below (finding 1):
@@ -1694,6 +1708,11 @@ static const char ES_TCC_USER[] =
     "      <Declaration><![CDATA[METHOD CallUntyped : BOOL\n]]></Declaration>\n"
     "      <Implementation><ST><![CDATA[_ext.Start();]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Method Name=\"ReadProp\" Id=\"{9}\">\n"
+    "      <Declaration><![CDATA[METHOD ReadProp : BOOL\nVAR\n\tt : TIME;\nEND_VAR\n]]>"
+    "</Declaration>\n"
+    "      <Implementation><ST><![CDATA[t := _timer.Elapsed;]]></ST></Implementation>\n"
+    "    </Method>\n"
     "  </POU>\n</TcPlcObject>\n";
 
 static int es_tcc_typed_call_fixture(bool parallel) {
@@ -1773,6 +1792,20 @@ static int es_tcc_typed_call_fixture(bool parallel) {
      * resolver instead of dropping the call outright. */
     failed += !es_tc_expect_none_with_strategy(store, p, "CallUntyped", user, "CALLS",
                                                "st_receiver_type");
+    /* Property read: the exact member edge only, no bare-name guess at the decoy. */
+    char targets[8][ES_TC_PATH];
+    int nt = es_tc_edge_targets(store, p, "ReadProp", user, "USAGE", targets, 8);
+    int to_timer = 0;
+    int to_decoy = 0;
+    for (int i = 0; i < nt && i < 8; i++) {
+        to_timer += strcmp(targets[i], "LibA/POUs/FB_Timer.TcPOU") == 0;
+        to_decoy += strcmp(targets[i], "LibB/POUs/FB_Decoy.TcPOU") == 0;
+    }
+    if (to_timer != 1 || to_decoy != 0) {
+        fprintf(stderr, "  [ES-TCC] ReadProp USAGE: timer=%d decoy=%d (want 1/0)\n", to_timer,
+                to_decoy);
+        failed++;
+    }
     if (failed) {
         es_dump_edge_histogram(store, p);
     }

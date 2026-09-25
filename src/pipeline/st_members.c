@@ -31,7 +31,8 @@
  * as before, with `line` (first occurrence) and `count` (occurrences in that
  * source node) in its properties. Both resolve venues (pass_usages.c and
  * pass_parallel.c) route every ST usage through cbm_st_resolve_plain +
- * cbm_st_resolve_member + the aggregator, so they cannot diverge.
+ * cbm_st_resolve_member + the aggregator, so they cannot diverge. A usage
+ * whose member resolves exactly contributes only the member edge.
  */
 #include "foundation/constants.h"
 #include "foundation/hash_table.h"
@@ -468,7 +469,9 @@ void cbm_st_usage_agg_add(cbm_st_usage_agg_t *agg, const cbm_gbuf_node_t *src,
     if (!agg || !src || !usage) {
         return;
     }
-    if (tgt) {
+    /* An exact member hit makes the bare-name registry guess for the same
+     * token redundant at best and wrong at worst (another FB's property). */
+    if (tgt && !member) {
         agg_add(agg, src->id, tgt->id, usage->ref_name, usage->start_line);
     }
     if (member && member != tgt) {
