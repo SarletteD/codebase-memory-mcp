@@ -1720,6 +1720,43 @@ static const char ES_TCC_LIBC_PROJ[] =
     "  </PropertyGroup>\n"
     "</Project>\n";
 
+/* A library that references LibB but not LibA: Ns_A means nothing here. */
+static const char ES_TCC_LIBD_PROJ[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+    "<Project DefaultTargets=\"Build\" "
+    "xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">\n"
+    "  <PropertyGroup>\n"
+    "    <Name>LibD</Name>\n"
+    "    <Title>LibD</Title>\n"
+    "    <DefaultNamespace>Ns_D</DefaultNamespace>\n"
+    "  </PropertyGroup>\n"
+    "  <ItemGroup>\n"
+    "    <PlaceholderReference Include=\"LibB\">\n"
+    "      <DefaultResolution>LibB, * (Vendor)</DefaultResolution>\n"
+    "      <Namespace>Ns_B</Namespace>\n"
+    "      <QualifiedOnly>true</QualifiedOnly>\n"
+    "    </PlaceholderReference>\n"
+    "  </ItemGroup>\n"
+    "  <ItemGroup>\n"
+    "    <PlaceholderResolution Include=\"LibB\">\n"
+    "      <Resolution>LibB, 1.0.0.0 (Vendor)</Resolution>\n"
+    "    </PlaceholderResolution>\n"
+    "  </ItemGroup>\n"
+    "</Project>\n";
+
+static const char ES_TCC_REMOTE[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <POU Name=\"FB_Remote\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+    "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Remote\nVAR\n"
+    "\t_xd : Ns_B.FB_XDerived;\n"
+    "END_VAR\n]]></Declaration>\n"
+    "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
+    "    <Method Name=\"CallFromLibD\" Id=\"{2}\">\n"
+    "      <Declaration><![CDATA[METHOD CallFromLibD : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_xd.Arm();]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "  </POU>\n</TcPlcObject>\n";
+
 static const char ES_TCC_USER[] =
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
     "  <POU Name=\"FB_User\" Id=\"{1}\" SpecialFunc=\"None\">\n"
@@ -1801,6 +1838,8 @@ static int es_tcc_typed_call_fixture(bool parallel) {
     files[n++] = (ES_LangFile){"LibA/LibA.plcproj", ES_TC_LIBA_PROJ};
     files[n++] = (ES_LangFile){"LibB/LibB.plcproj", ES_TC_LIBB_PROJ};
     files[n++] = (ES_LangFile){"LibC/LibC.plcproj", ES_TCC_LIBC_PROJ};
+    files[n++] = (ES_LangFile){"LibD/LibD.plcproj", ES_TCC_LIBD_PROJ};
+    files[n++] = (ES_LangFile){"LibD/POUs/FB_Remote.TcPOU", ES_TCC_REMOTE};
     /* Two-level EXTENDS chain beside an interface that declares the same method. */
     snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, "FB_ChainA",
              "FUNCTION_BLOCK FB_ChainA EXTENDS FB_ChainB IMPLEMENTS I_Tick");
@@ -1929,6 +1968,12 @@ static int es_tcc_typed_call_fixture(bool parallel) {
     failed +=
         !es_tc_expect(store, p, "CallCrossLib", user, "CALLS", "LibA/POUs/FB_TimerBase.TcPOU");
     failed += !es_tc_expect_strategy(store, p, "CallCrossLib", user, "CALLS", "st_receiver_type");
+    /* The same base seen from LibD, which cannot spell Ns_A: only resolving the
+     * base in the derived FB's own file (LibB) reaches FB_TimerBase. */
+    failed += !es_tc_expect(store, p, "CallFromLibD", "LibD/POUs/FB_Remote.TcPOU", "CALLS",
+                            "LibA/POUs/FB_TimerBase.TcPOU");
+    failed += !es_tc_expect_strategy(store, p, "CallFromLibD", "LibD/POUs/FB_Remote.TcPOU", "CALLS",
+                                     "st_receiver_type");
     /* Interface EXTENDS interface: the method lives on the base interface. */
     failed += !es_tc_expect(store, p, "CallSubItf", user, "CALLS", "LibB/POUs/I_Runner.TcIO");
     failed += !es_tc_expect_strategy(store, p, "CallSubItf", user, "CALLS", "st_receiver_type");
