@@ -214,6 +214,11 @@ bool cbm_walk_python_param_is_bound(const WalkState *state, const char *name);
 CBMInvocationDescriptor handle_calls(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec,
                                      WalkState *state);
 void handle_usages(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, WalkState *state);
+/* Structured Text: when `member` is the member identifier of a member access,
+ * report its dotted receiver and the receiver head's declared type (innermost
+ * enclosing VAR block). Shared by member usages and member calls. */
+bool cbm_st_member_receiver(CBMExtractCtx *ctx, TSNode member, const char **qualifier,
+                            const char **type);
 void cbm_finalize_lexical_usages(CBMExtractCtx *ctx, WalkState *state);
 void handle_throws(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, WalkState *state);
 void handle_readwrites(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, WalkState *state);

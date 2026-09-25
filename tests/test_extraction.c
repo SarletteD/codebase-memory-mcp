@@ -9063,6 +9063,72 @@ TEST(extract_walk_truncated_when_a_node_budget_is_set) {
     PASS();
 }
 
+static const CBMCall *st_call_named(const CBMFileResult *r, const char *callee) {
+    for (int i = 0; i < r->calls.count; i++) {
+        if (r->calls.items[i].callee_name && strcmp(r->calls.items[i].callee_name, callee) == 0)
+            return &r->calls.items[i];
+    }
+    return NULL;
+}
+
+/* A call through a declared variable carries the receiver and its declared
+ * type, exactly as a member usage does; a method-local VAR shadows the
+ * FB-level one. */
+TEST(st_member_call_carries_receiver_and_declared_type) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_User\n"
+                               "VAR\n"
+                               "\t_timer : Ns_A.FB_Timer;\n"
+                               "\t_other : FB_Timer;\n"
+                               "END_VAR\n"
+                               "METHOD Run : BOOL\n"
+                               "VAR\n"
+                               "\t_other : FB_Decoy;\n"
+                               "END_VAR\n"
+                               "_timer.Start();\n"
+                               "_other.Stop();\n"
+                               "END_METHOD\n"
+                               "END_FUNCTION_BLOCK\n",
+                               CBM_LANG_ST, "t", "FB_User.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMCall *start = st_call_named(r, "_timer.Start");
+    const CBMCall *stop = st_call_named(r, "_other.Stop");
+    ASSERT_NOT_NULL(start);
+    ASSERT_NOT_NULL(stop);
+    ASSERT_STR_EQ(start->member_qualifier, "_timer");
+    ASSERT_STR_EQ(start->qualifier_type, "Ns_A.FB_Timer");
+    ASSERT_STR_EQ(stop->member_qualifier, "_other");
+    ASSERT_STR_EQ(stop->qualifier_type, "FB_Decoy");
+    cbm_result_compact(r);
+    const char *lo = r->arena.blocks[0];
+    const char *hi = lo + r->arena.block_sizes[0];
+    start = st_call_named(r, "_timer.Start");
+    ASSERT_NOT_NULL(start);
+    ASSERT(start->member_qualifier >= lo && start->member_qualifier < hi);
+    ASSERT(start->qualifier_type >= lo && start->qualifier_type < hi);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A bare call and a call on an undeclared receiver carry no receiver type. */
+TEST(st_call_without_declared_receiver_has_no_type) {
+    CBMFileResult *r = extract("PROGRAM MAIN\n"
+                               "Helper();\n"
+                               "GVL_X.obj.Run();\n"
+                               "END_PROGRAM\n",
+                               CBM_LANG_ST, "t", "MAIN.st");
+    ASSERT_NOT_NULL(r);
+    const CBMCall *bare = st_call_named(r, "Helper");
+    const CBMCall *gvl = st_call_named(r, "GVL_X.obj.Run");
+    ASSERT_NOT_NULL(bare);
+    ASSERT_NOT_NULL(gvl);
+    ASSERT_NULL(bare->qualifier_type);
+    ASSERT_NULL(gvl->qualifier_type);
+    ASSERT_STR_EQ(gvl->member_qualifier, "GVL_X.obj");
+    cbm_free_result(r);
+    PASS();
+}
+
 SUITE(extraction) {
     RUN_TEST(extract_compact_keeps_every_field_and_shrinks_the_arena);
     RUN_TEST(extract_compact_is_idempotent_and_survives_empty_results);
@@ -9098,6 +9164,8 @@ SUITE(extraction) {
     RUN_TEST(st_enum_values_stop_at_int64_overflow);
     RUN_TEST(st_member_qualifier_is_built_from_identifier_tokens);
     RUN_TEST(st_member_qualifiers_survive_compaction);
+    RUN_TEST(st_member_call_carries_receiver_and_declared_type);
+    RUN_TEST(st_call_without_declared_receiver_has_no_type);
     RUN_TEST(twincat_enum_base_only_reaches_enum_members);
     RUN_TEST(st_enum_value_int64_min_is_representable);
 

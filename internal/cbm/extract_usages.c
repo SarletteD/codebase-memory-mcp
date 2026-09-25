@@ -2752,40 +2752,41 @@ static bool st_chain_append(CBMExtractCtx *ctx, TSNode n, char *buf, size_t size
     return true;
 }
 
-static void st_annotate_member_usage(CBMExtractCtx *ctx, CBMUsage *usage, TSNode node) {
-    if (ctx->language != CBM_LANG_ST || strcmp(ts_node_type(node), "identifier") != 0) {
-        return;
+bool cbm_st_member_receiver(CBMExtractCtx *ctx, TSNode node, const char **qualifier,
+                            const char **type) {
+    if (ctx->language != CBM_LANG_ST || ts_node_is_null(node) ||
+        strcmp(ts_node_type(node), "identifier") != 0) {
+        return false;
     }
     TSNode parent = ts_node_parent(node);
     if (ts_node_is_null(parent) || strcmp(ts_node_type(parent), "member_access_expression") != 0) {
-        return;
+        return false;
     }
     TSNode member = ts_node_child_by_field_name(parent, TS_FIELD("member"));
     if (ts_node_is_null(member) || !ts_node_eq(member, node)) {
-        return;
+        return false;
     }
-    usage->is_member_access = true;
     TSNode obj = ts_node_child_by_field_name(parent, TS_FIELD("object"));
     if (ts_node_is_null(obj) || !st_is_identifier_chain(obj)) {
-        return;
+        return true;
     }
     char chain[1024];
     size_t chain_len = 0;
     if (!st_chain_append(ctx, obj, chain, sizeof(chain), &chain_len)) {
-        return;
+        return true;
     }
-    usage->member_qualifier = cbm_arena_strndup(ctx->arena, chain, chain_len);
+    *qualifier = cbm_arena_strndup(ctx->arena, chain, chain_len);
     TSNode head = obj;
     while (strcmp(ts_node_type(head), "member_access_expression") == 0) {
         head = ts_node_child_by_field_name(head, TS_FIELD("object"));
     }
     /* A qualified_identifier head is a namespace path, never a variable. */
     if (strcmp(ts_node_type(head), "identifier") != 0) {
-        return;
+        return true;
     }
     char *head_name = cbm_node_text(ctx->arena, head, ctx->source);
     if (!head_name || !head_name[0]) {
-        return;
+        return true;
     }
     /* Innermost VAR scope wins: a method-local shadows an FB-level member. */
     for (TSNode owner = ts_node_parent(parent); !ts_node_is_null(owner);
@@ -2793,11 +2794,22 @@ static void st_annotate_member_usage(CBMExtractCtx *ctx, CBMUsage *usage, TSNode
         if (!st_is_var_owner(ts_node_type(owner))) {
             continue;
         }
-        const char *type = st_declared_type_in(ctx, owner, head_name);
-        if (type) {
-            usage->qualifier_type = type;
-            return;
+        const char *declared = st_declared_type_in(ctx, owner, head_name);
+        if (declared) {
+            *type = declared;
+            return true;
         }
+    }
+    return true;
+}
+
+static void st_annotate_member_usage(CBMExtractCtx *ctx, CBMUsage *usage, TSNode node) {
+    const char *qualifier = NULL;
+    const char *type = NULL;
+    if (cbm_st_member_receiver(ctx, node, &qualifier, &type)) {
+        usage->is_member_access = true;
+        usage->member_qualifier = qualifier;
+        usage->qualifier_type = type;
     }
 }
 

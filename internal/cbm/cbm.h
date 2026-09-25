@@ -301,6 +301,10 @@ typedef struct {
                                      // (self.compiler.apply_converters()). An object the
                                      // class owns, not a parameter: read by the weak-member
                                      // guard's unique-name exemption. Default false.
+    const char *member_qualifier; // Structured Text: dotted receiver of a member call
+                                  // ("_timer", "_par.Inner"); NULL unless an identifier chain
+    const char *qualifier_type;   // Structured Text: declared type of the receiver's head when
+                                  // an enclosing VAR block declares it, else NULL
 } CBMCall;
 
 typedef struct {

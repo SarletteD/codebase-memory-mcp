@@ -3746,6 +3746,11 @@ CBMInvocationDescriptor handle_calls(CBMExtractCtx *ctx, TSNode node, const CBML
         if (primary_callee_name_is_allowed(ctx, &callee)) {
             CBMCall call = {0};
             call.callee_name = callee.name;
+            if (ctx->language == CBM_LANG_ST) {
+                TSNode leaf = !ts_node_is_null(callee.leaf) ? callee.leaf : callee.expr;
+                (void)cbm_st_member_receiver(ctx, leaf, &call.member_qualifier,
+                                             &call.qualifier_type);
+            }
             call.enclosing_func_qn = state->enclosing_func_qn;
             call.loop_depth = state->loop_depth;     // enclosing loop nesting at this call
             call.branch_depth = state->branch_depth; // enclosing branch nesting at this call
