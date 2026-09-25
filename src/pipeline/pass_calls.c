@@ -475,7 +475,7 @@ static const cbm_gbuf_node_t *calls_find_source(cbm_pipeline_ctx_t *ctx, const c
 }
 
 /* Resolve one call and emit the appropriate edge. Returns 1 if resolved, 0 if not. */
-static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
+static int resolve_single_call(cbm_pipeline_ctx_t *ctx, cbm_tc_ns_t *tc_ns, CBMCall *call,
                                const CBMResolvedCallArray *lsp_calls, const char *rel,
                                const char *module_qn, const char **imp_keys, const char **imp_vals,
                                int imp_count, CBMLanguage lang) {
@@ -518,6 +518,29 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
      * project `operator+`, fabricating a CALLS edge. */
     if (call->requires_lsp_resolution) {
         return 0;
+    }
+
+    /* Structured Text call through a declared variable: the receiver's type
+     * decides, exact or nothing (st_members.c). */
+    if (cbm_st_lang(lang)) {
+        const cbm_gbuf_node_t *st_target = NULL;
+        cbm_st_call_status_t st = cbm_st_resolve_call(tc_ns, ctx->registry, ctx->gbuf, rel, lang,
+                                                      call, &st_target);
+        if (st == CBM_ST_CALL_NOT_FOUND) {
+            return 0;
+        }
+        if (st == CBM_ST_CALL_FOUND) {
+            if (st_target->id == source_node->id) {
+                return 0;
+            }
+            cbm_resolution_t st_res = {.qualified_name = st_target->qualified_name,
+                                       .confidence = 1.0,
+                                       .strategy = "st_receiver_type",
+                                       .candidate_count = 1};
+            emit_classified_edge(ctx, call, source_node, st_target, &st_res, module_qn, imp_keys,
+                                 imp_vals, imp_count, false);
+            return SKIP_ONE;
+        }
     }
 
     /* Service-pattern HTTP/ASYNC client call (`requests.get(url)`): the service
@@ -802,9 +825,12 @@ int cbm_pipeline_pass_calls(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *file
     int resolved = 0;
     int unresolved = 0;
     int errors = 0;
+    /* Namespace-qualified TwinCAT types, as pass_usages.c resolves for USAGE. */
+    cbm_tc_ns_t *tc_ns = cbm_tc_ns_new(ctx->repo_path);
 
     for (int i = 0; i < file_count; i++) {
         if (cbm_pipeline_check_cancel(ctx)) {
+            cbm_tc_ns_free(tc_ns);
             return CBM_NOT_FOUND;
         }
 
@@ -841,8 +867,8 @@ int cbm_pipeline_pass_calls(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *file
                 continue;
             }
             total_calls++;
-            if (resolve_single_call(ctx, call, &result->resolved_calls, rel, module_qn, imp_keys,
-                                    imp_vals, imp_count, files[i].language)) {
+            if (resolve_single_call(ctx, tc_ns, call, &result->resolved_calls, rel, module_qn,
+                                    imp_keys, imp_vals, imp_count, files[i].language)) {
                 resolved++;
             } else {
                 unresolved++;
@@ -856,6 +882,7 @@ int cbm_pipeline_pass_calls(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *file
         }
     }
 
+    cbm_tc_ns_free(tc_ns);
     cbm_log_info("pass.done", "pass", "calls", "total", itoa_log(total_calls), "resolved",
                  itoa_log(resolved), "unresolved", itoa_log(unresolved), "errors",
                  itoa_log(errors));

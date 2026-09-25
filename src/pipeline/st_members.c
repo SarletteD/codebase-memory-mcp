@@ -232,18 +232,13 @@ const cbm_gbuf_node_t *cbm_st_resolve_plain(const cbm_registry_t *reg, const cbm
     return cbm_st_is_dut_member(gbuf, tgt) ? NULL : tgt;
 }
 
-const cbm_gbuf_node_t *cbm_st_resolve_member(cbm_tc_ns_t *ns, const cbm_registry_t *reg,
-                                             const cbm_gbuf_t *gbuf, const char *rel,
-                                             CBMLanguage lang, const CBMUsage *usage) {
-    if (!reg || !gbuf || !rel || !usage || !usage->ref_name || !usage->member_qualifier ||
-        !usage->member_qualifier[0]) {
-        return NULL;
-    }
-    st_resolve_ctx_t rc = {ns, reg, gbuf, lang};
-
-    /* Split the canonical dotted receiver into segments. */
+/* The type-like node the receiver chain `qualifier` denotes: its head through
+ * `qualifier_type` (a declared variable) or as a type path, every further
+ * segment through the Field's declared return_type. NULL when any hop fails. */
+static const cbm_gbuf_node_t *receiver_type(const st_resolve_ctx_t *rc, const char *rel,
+                                            const char *qualifier, const char *qualifier_type) {
     char buf[CBM_SZ_1K];
-    if (snprintf(buf, sizeof(buf), "%s", usage->member_qualifier) >= (int)sizeof(buf)) {
+    if (snprintf(buf, sizeof(buf), "%s", qualifier) >= (int)sizeof(buf)) {
         return NULL;
     }
     const char *seg[ST_MAX_SEGMENTS];
@@ -262,37 +257,130 @@ const cbm_gbuf_node_t *cbm_st_resolve_member(cbm_tc_ns_t *ns, const cbm_registry
     if (nseg == 0 || nseg == ST_MAX_SEGMENTS) {
         return NULL;
     }
-
     const cbm_gbuf_node_t *cur = NULL;
     int next = 0;
-    if (usage->qualifier_type) {
-        /* `_par.Inner.Depth` with VAR _par : T_Par — the head is a variable. */
-        cur = resolve_type(&rc, rel, usage->qualifier_type);
+    if (qualifier_type) {
+        cur = resolve_type(rc, rel, qualifier_type);
         next = 1;
     } else {
-        /* The head is a type path: `Vnd_Core.E_AlarmState` (alias + type) or `E_State`. */
         if (nseg >= 2) {
             char two[CBM_SZ_512];
             snprintf(two, sizeof(two), "%s.%s", seg[0], seg[1]);
-            cur = resolve_type(&rc, rel, two);
+            cur = resolve_type(rc, rel, two);
             next = 2;
         }
         if (!cur) {
-            cur = resolve_type(&rc, rel, seg[0]);
+            cur = resolve_type(rc, rel, seg[0]);
             next = 1;
         }
     }
     for (int i = next; cur && i < nseg; i++) {
-        const cbm_gbuf_node_t *f = field_of(gbuf, cur, seg[i]);
+        const cbm_gbuf_node_t *f = field_of(rc->gbuf, cur, seg[i]);
         char declared[CBM_SZ_512];
         /* The field's declared type means what it means in the FIELD's file. */
         cur =
             f && f->file_path &&
                     json_string_prop(f->properties_json, "return_type", declared, sizeof(declared))
-                ? resolve_type(&rc, f->file_path, declared)
+                ? resolve_type(rc, f->file_path, declared)
                 : NULL;
     }
-    return cur ? field_of(gbuf, cur, usage->ref_name) : NULL;
+    return cur;
+}
+
+const cbm_gbuf_node_t *cbm_st_resolve_member(cbm_tc_ns_t *ns, const cbm_registry_t *reg,
+                                             const cbm_gbuf_t *gbuf, const char *rel,
+                                             CBMLanguage lang, const CBMUsage *usage) {
+    if (!reg || !gbuf || !rel || !usage || !usage->ref_name || !usage->member_qualifier ||
+        !usage->member_qualifier[0]) {
+        return NULL;
+    }
+    st_resolve_ctx_t rc = {ns, reg, gbuf, lang};
+    const cbm_gbuf_node_t *owner =
+        receiver_type(&rc, rel, usage->member_qualifier, usage->qualifier_type);
+    return owner ? field_of(gbuf, owner, usage->ref_name) : NULL;
+}
+
+/* Bases walked per lookup; deeper hierarchies are not real ST code. */
+#define ST_MAX_BASES 32
+
+/* Next base name in a JSON string array starting at *p ("[\"A\",\"B\"]"),
+ * copied into out; false at the end. Names never carry escapes. */
+static bool next_base(const char **p, char *out, size_t out_size) {
+    const char *q = strchr(*p, '"');
+    if (!q) {
+        return false;
+    }
+    const char *e = strchr(q + 1, '"');
+    if (!e || (size_t)(e - q - 1) >= out_size) {
+        return false;
+    }
+    memcpy(out, q + 1, (size_t)(e - q - 1));
+    out[e - q - 1] = '\0';
+    *p = e + 1;
+    return true;
+}
+
+/* The Method `name` on `owner` or, breadth-first, on its base_classes. */
+static const cbm_gbuf_node_t *method_of_type(const st_resolve_ctx_t *rc,
+                                             const cbm_gbuf_node_t *owner, const char *name) {
+    const cbm_gbuf_node_t *queue[ST_MAX_BASES];
+    int head = 0;
+    int tail = 0;
+    queue[tail++] = owner;
+    while (head < tail) {
+        const cbm_gbuf_node_t *t = queue[head++];
+        char qn[CBM_SZ_1K];
+        int w = snprintf(qn, sizeof(qn), "%s.%s", t->qualified_name, name);
+        if (w > 0 && (size_t)w < sizeof(qn)) {
+            const cbm_gbuf_node_t *m = cbm_gbuf_find_by_qn(rc->gbuf, qn);
+            if (m && m->label && strcmp(m->label, "Method") == 0) {
+                return m;
+            }
+        }
+        const char *bases = t->properties_json ? strstr(t->properties_json, "\"base_classes\":[")
+                                               : NULL;
+        const char *end = bases ? strchr(bases, ']') : NULL;
+        if (!bases || !end) {
+            continue;
+        }
+        const char *p = bases + strlen("\"base_classes\":[");
+        char base[CBM_SZ_512];
+        while (p < end && next_base(&p, base, sizeof(base))) {
+            const cbm_gbuf_node_t *b = t->file_path ? resolve_type(rc, t->file_path, base) : NULL;
+            bool seen = false;
+            for (int i = 0; b && i < tail; i++) {
+                seen = seen || queue[i] == b;
+            }
+            if (b && !seen && tail < ST_MAX_BASES) {
+                queue[tail++] = b;
+            }
+        }
+    }
+    return NULL;
+}
+
+cbm_st_call_status_t cbm_st_resolve_call(cbm_tc_ns_t *ns, const cbm_registry_t *reg,
+                                         const cbm_gbuf_t *gbuf, const char *rel,
+                                         CBMLanguage lang, const CBMCall *call,
+                                         const cbm_gbuf_node_t **out_method) {
+    *out_method = NULL;
+    if (!reg || !gbuf || !rel || !call || !call->callee_name || !call->qualifier_type ||
+        !call->member_qualifier || !call->member_qualifier[0]) {
+        return CBM_ST_CALL_UNTYPED;
+    }
+    const char *leaf = strrchr(call->callee_name, '.');
+    leaf = leaf ? leaf + 1 : call->callee_name;
+    if (!leaf[0]) {
+        return CBM_ST_CALL_UNTYPED;
+    }
+    st_resolve_ctx_t rc = {ns, reg, gbuf, lang};
+    const cbm_gbuf_node_t *owner =
+        receiver_type(&rc, rel, call->member_qualifier, call->qualifier_type);
+    if (!owner) {
+        return CBM_ST_CALL_UNTYPED;
+    }
+    *out_method = method_of_type(&rc, owner, leaf);
+    return *out_method ? CBM_ST_CALL_FOUND : CBM_ST_CALL_NOT_FOUND;
 }
 
 /* ── Occurrence aggregation ─────────────────────────────────────────────── */

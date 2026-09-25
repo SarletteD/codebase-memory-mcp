@@ -2905,6 +2905,22 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                 ws->lsp_overrides++;
             }
         }
+        /* Structured Text typed receiver — the sequential twin is in pass_calls.c. */
+        if (cbm_st_lang(lang) && !lsp_target) {
+            const cbm_gbuf_node_t *st_target = NULL;
+            cbm_st_call_status_t st = cbm_st_resolve_call(rc->tc_ns, rc->registry, rc->main_gbuf,
+                                                          rel, lang, call, &st_target);
+            if (st == CBM_ST_CALL_NOT_FOUND ||
+                (st == CBM_ST_CALL_FOUND && st_target->id == source_node->id)) {
+                continue;
+            }
+            if (st == CBM_ST_CALL_FOUND) {
+                res.qualified_name = st_target->qualified_name;
+                res.strategy = "st_receiver_type";
+                res.confidence = 1.0;
+                res.candidate_count = 1;
+            }
+        }
         /* #1085: fall back to the registry resolver whenever the LSP did not
          * yield a gbuf-resolvable target — whether no LSP resolution existed,
          * OR the LSP was confident but its callee_qn isn't a node in the gbuf

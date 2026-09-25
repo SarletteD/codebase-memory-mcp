@@ -1478,6 +1478,154 @@ TEST(es_twincat_member_usage_same_name_in_two_libraries_parallel) {
     PASS();
 }
 
+/* Typed-receiver calls: every method below makes exactly one call, so a
+ * one-edge expectation pins both the target and the absence of a guess. */
+static const char ES_TCC_TIMER[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <POU Name=\"FB_Timer\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+    "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Timer\nVAR\nEND_VAR\n]]></Declaration>\n"
+    "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
+    "    <Method Name=\"Start\" Id=\"{2}\">\n"
+    "      <Declaration><![CDATA[METHOD Start : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[Start := TRUE;]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "  </POU>\n</TcPlcObject>\n";
+
+/* Same method names as everything the user calls: the generic resolver's decoy. */
+static const char ES_TCC_DECOY[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <POU Name=\"FB_Decoy\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+    "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Decoy\nVAR\nEND_VAR\n]]></Declaration>\n"
+    "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
+    "    <Method Name=\"Start\" Id=\"{2}\">\n"
+    "      <Declaration><![CDATA[METHOD Start : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[Start := TRUE;]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "    <Method Name=\"Reset\" Id=\"{3}\">\n"
+    "      <Declaration><![CDATA[METHOD Reset : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[Reset := TRUE;]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "    <Method Name=\"Fire\" Id=\"{4}\">\n"
+    "      <Declaration><![CDATA[METHOD Fire : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[Fire := TRUE;]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "    <Method Name=\"Missing\" Id=\"{5}\">\n"
+    "      <Declaration><![CDATA[METHOD Missing : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[Missing := TRUE;]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "  </POU>\n</TcPlcObject>\n";
+
+static const char ES_TCC_BASE[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <POU Name=\"FB_Base\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+    "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Base\nVAR\nEND_VAR\n]]></Declaration>\n"
+    "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
+    "    <Method Name=\"Reset\" Id=\"{2}\">\n"
+    "      <Declaration><![CDATA[METHOD Reset : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[Reset := TRUE;]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "  </POU>\n</TcPlcObject>\n";
+
+static const char ES_TCC_USER[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <POU Name=\"FB_User\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+    "    <Declaration><![CDATA[FUNCTION_BLOCK FB_User\nVAR\n"
+    "\t_timer : Ns_A.FB_Timer;\n\t_derived : FB_Derived;\n\t_runner : I_Runner;\n"
+    "END_VAR\n]]></Declaration>\n"
+    "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
+    "    <Method Name=\"CallTimer\" Id=\"{2}\">\n"
+    "      <Declaration><![CDATA[METHOD CallTimer : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_timer.Start();]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "    <Method Name=\"CallInherited\" Id=\"{3}\">\n"
+    "      <Declaration><![CDATA[METHOD CallInherited : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_derived.Reset();]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "    <Method Name=\"CallItf\" Id=\"{4}\">\n"
+    "      <Declaration><![CDATA[METHOD CallItf : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_runner.Fire();]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "    <Method Name=\"CallMissing\" Id=\"{5}\">\n"
+    "      <Declaration><![CDATA[METHOD CallMissing : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_timer.Missing();]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "  </POU>\n</TcPlcObject>\n";
+
+static int es_tcc_typed_call_fixture(bool parallel) {
+    static char names[ES_TC_PAD_FILES + 12][ES_TC_PATH];
+    static char bodies[ES_TC_PAD_FILES + 12][1024];
+    ES_LangFile files[ES_TC_PAD_FILES + 12];
+    int n = 0;
+    files[n++] = (ES_LangFile){"LibA/LibA.plcproj", ES_TC_LIBA_PROJ};
+    files[n++] = (ES_LangFile){"LibB/LibB.plcproj", ES_TC_LIBB_PROJ};
+    files[n++] = (ES_LangFile){"LibA/POUs/FB_Timer.TcPOU", ES_TCC_TIMER};
+    files[n++] = (ES_LangFile){"LibB/POUs/FB_Decoy.TcPOU", ES_TCC_DECOY};
+    files[n++] = (ES_LangFile){"LibB/POUs/FB_Base.TcPOU", ES_TCC_BASE};
+    files[n++] = (ES_LangFile){"LibB/POUs/FB_User.TcPOU", ES_TCC_USER};
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, "FB_Derived",
+             "FUNCTION_BLOCK FB_Derived EXTENDS FB_Base");
+    files[n] = (ES_LangFile){"LibB/POUs/FB_Derived.TcPOU", bodies[n]};
+    n++;
+    snprintf(bodies[n], sizeof(bodies[n]), ES_TC_ITF, "I_Runner", "INTERFACE I_Runner");
+    files[n] = (ES_LangFile){"LibB/POUs/I_Runner.TcIO", bodies[n]};
+    n++;
+    for (int i = 0; parallel && i < ES_TC_PAD_FILES; i++) {
+        char pad[32];
+        char header[64];
+        snprintf(pad, sizeof(pad), "FB_Pad%02d", i);
+        snprintf(header, sizeof(header), "FUNCTION_BLOCK %s", pad);
+        snprintf(names[n], sizeof(names[n]), "LibB/Pad/%s.TcPOU", pad);
+        snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, pad, header);
+        files[n] = (ES_LangFile){names[n], bodies[n]};
+        n++;
+    }
+    const char *old_workers = getenv("CBM_WORKERS");
+    char *saved_workers = old_workers ? strdup(old_workers) : NULL;
+    if (parallel) {
+        cbm_setenv("CBM_WORKERS", "4", 1);
+    }
+    ES_LangProj lp;
+    cbm_store_t *store = es_lang_index_files(&lp, files, n);
+    if (parallel) {
+        if (saved_workers) {
+            cbm_setenv("CBM_WORKERS", saved_workers, 1);
+        } else {
+            cbm_unsetenv("CBM_WORKERS");
+        }
+    }
+    free(saved_workers);
+    if (!store) {
+        es_lang_cleanup(&lp, store);
+        return 1;
+    }
+    const char *p = lp.project;
+    const char *user = "LibB/POUs/FB_User.TcPOU";
+    int failed = 0;
+    /* Qualified declared type through the .plcproj alias, decoy ignored. */
+    failed += !es_tc_expect(store, p, "CallTimer", user, "CALLS", "LibA/POUs/FB_Timer.TcPOU");
+    /* Method found on the EXTENDS base. */
+    failed += !es_tc_expect(store, p, "CallInherited", user, "CALLS", "LibB/POUs/FB_Base.TcPOU");
+    /* Interface-typed receiver binds the interface's method. */
+    failed += !es_tc_expect(store, p, "CallItf", user, "CALLS", "LibB/POUs/I_Runner.TcIO");
+    /* Type known, method absent: no edge, not the decoy's Missing. */
+    failed += !es_tc_expect(store, p, "CallMissing", user, "CALLS", NULL);
+    if (failed) {
+        es_dump_edge_histogram(store, p);
+    }
+    es_lang_cleanup(&lp, store);
+    return failed;
+}
+
+TEST(es_twincat_typed_receiver_calls_sequential) {
+    ASSERT_EQ(es_tcc_typed_call_fixture(false), 0);
+    PASS();
+}
+
+TEST(es_twincat_typed_receiver_calls_parallel) {
+    ASSERT_EQ(es_tcc_typed_call_fixture(true), 0);
+    PASS();
+}
+
 /* Member resolution never binds a type of another language (a C struct is
  * the only T_Foreign) and prefers a type declared in the referencing file
  * over a same-named one elsewhere in the library. */
@@ -1847,6 +1995,8 @@ SUITE(edge_structural) {
     RUN_TEST(es_twincat_member_usage_edges_parallel);
     RUN_TEST(es_twincat_member_usage_same_name_in_two_libraries_sequential);
     RUN_TEST(es_twincat_member_usage_same_name_in_two_libraries_parallel);
+    RUN_TEST(es_twincat_typed_receiver_calls_sequential);
+    RUN_TEST(es_twincat_typed_receiver_calls_parallel);
     RUN_TEST(es_twincat_member_usage_never_crosses_languages_or_files);
 
     /* ── FAMILY 3: IMPLEMENTS cross-file (Rust) ──────────────── */
