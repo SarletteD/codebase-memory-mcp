@@ -702,11 +702,15 @@ static const char ES_TC_LIBB_PROJ[] =
     "  </ItemGroup>\n"
     "</Project>\n";
 
-/* Target file paths of the `edge_type` edges leaving the node `name` defined in
- * `file`. Returns the edge count, or -1 when that source node is not found. */
-static int es_tc_edge_targets(cbm_store_t *store, const char *project, const char *name,
-                              const char *file, const char *edge_type, char out[][ES_TC_PATH],
-                              int max) {
+/* Edges of type `edge_type` leaving the node `name` defined in `file`, found by
+ * (project, name, file_path). On success returns the edge count (0 or more)
+ * and, when `out_edges` is non-NULL, hands back ownership of the matching
+ * edges array (cbm_store_free_edges when done); -1 when the source node
+ * itself is not found. Shared by every check below that needs "the edges of
+ * this source node" — the source-node lookup and the edge fetch used to be
+ * copied into each one separately. */
+static int es_tc_source_edges(cbm_store_t *store, const char *project, const char *name,
+                              const char *file, const char *edge_type, cbm_edge_t **out_edges) {
     cbm_node_t *nodes = NULL;
     int count = 0;
     int64_t source_id = 0;
@@ -726,6 +730,24 @@ static int es_tc_edge_targets(cbm_store_t *store, const char *project, const cha
     int edge_count = 0;
     if (cbm_store_find_edges_by_source_type(store, source_id, edge_type, &edges, &edge_count) !=
         CBM_STORE_OK) {
+        return -1;
+    }
+    if (out_edges) {
+        *out_edges = edges;
+    } else {
+        cbm_store_free_edges(edges, edge_count);
+    }
+    return edge_count;
+}
+
+/* Target file paths of the `edge_type` edges leaving the node `name` defined in
+ * `file`. Returns the edge count, or -1 when that source node is not found. */
+static int es_tc_edge_targets(cbm_store_t *store, const char *project, const char *name,
+                              const char *file, const char *edge_type, char out[][ES_TC_PATH],
+                              int max) {
+    cbm_edge_t *edges = NULL;
+    int edge_count = es_tc_source_edges(store, project, name, file, edge_type, &edges);
+    if (edge_count < 0) {
         return -1;
     }
     for (int i = 0; i < edge_count && i < max; i++) {
@@ -758,27 +780,6 @@ static int es_tc_expect(cbm_store_t *store, const char *project, const char *nam
     return ok;
 }
 
-/* Source node id of `name` defined in `file`, or 0 when not found. Shared by
- * the strategy-property checks below (es_tc_edge_targets duplicates this
- * lookup instead of calling out to it — kept separate to avoid touching that
- * already-covered helper). */
-static int64_t es_tc_source_id(cbm_store_t *store, const char *project, const char *name,
-                               const char *file) {
-    cbm_node_t *nodes = NULL;
-    int count = 0;
-    int64_t source_id = 0;
-    if (cbm_store_find_nodes_by_name(store, project, name, &nodes, &count) != CBM_STORE_OK) {
-        return 0;
-    }
-    for (int i = 0; i < count; i++) {
-        if (nodes[i].file_path && strcmp(nodes[i].file_path, file) == 0) {
-            source_id = nodes[i].id;
-        }
-    }
-    cbm_store_free_nodes(nodes, count);
-    return source_id;
-}
-
 /* Expect exactly one `edge_type` edge from (name, file) whose "strategy"
  * property equals want_strategy (edge properties JSON, e.g.
  * {"...,"strategy":"st_receiver_type",...}). Proves the FOUND branch of
@@ -787,16 +788,11 @@ static int64_t es_tc_source_id(cbm_store_t *store, const char *project, const ch
 static bool es_tc_expect_strategy(cbm_store_t *store, const char *project, const char *name,
                                   const char *file, const char *edge_type,
                                   const char *want_strategy) {
-    int64_t source_id = es_tc_source_id(store, project, name, file);
-    if (source_id == 0) {
+    cbm_edge_t *edges = NULL;
+    int edge_count = es_tc_source_edges(store, project, name, file, edge_type, &edges);
+    if (edge_count < 0) {
         fprintf(stderr, "  [ES-TC] FAIL %s (%s) %s strategy: source node not found\n", name, file,
                 edge_type);
-        return false;
-    }
-    cbm_edge_t *edges = NULL;
-    int edge_count = 0;
-    if (cbm_store_find_edges_by_source_type(store, source_id, edge_type, &edges, &edge_count) !=
-        CBM_STORE_OK) {
         return false;
     }
     bool ok = false;
@@ -824,16 +820,11 @@ static bool es_tc_expect_strategy(cbm_store_t *store, const char *project, const
 static bool es_tc_expect_none_with_strategy(cbm_store_t *store, const char *project,
                                             const char *name, const char *file,
                                             const char *edge_type, const char *avoid_strategy) {
-    int64_t source_id = es_tc_source_id(store, project, name, file);
-    if (source_id == 0) {
+    cbm_edge_t *edges = NULL;
+    int edge_count = es_tc_source_edges(store, project, name, file, edge_type, &edges);
+    if (edge_count < 0) {
         fprintf(stderr, "  [ES-TC] FAIL %s (%s) %s strategy: source node not found\n", name, file,
                 edge_type);
-        return false;
-    }
-    cbm_edge_t *edges = NULL;
-    int edge_count = 0;
-    if (cbm_store_find_edges_by_source_type(store, source_id, edge_type, &edges, &edge_count) !=
-        CBM_STORE_OK) {
         return false;
     }
     char needle[ES_TC_PATH];
@@ -1620,6 +1611,10 @@ static const char ES_TCC_DECOY[] =
     "STRING;\nEND_VAR\n]]></Declaration>\n"
     "      <Implementation><ST><![CDATA[SendRequest := TRUE;]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Method Name=\"Nope\" Id=\"{7}\">\n"
+    "      <Declaration><![CDATA[METHOD Nope : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[Nope := TRUE;]]></ST></Implementation>\n"
+    "    </Method>\n"
     "    <Property Name=\"Elapsed\" Id=\"{9}\">\n"
     "      <Declaration><![CDATA[PROPERTY Elapsed : TIME\n]]></Declaration>\n"
     "      <Get Name=\"Get\" Id=\"{10}\">\n"
@@ -1629,8 +1624,9 @@ static const char ES_TCC_DECOY[] =
     "    </Property>\n"
     "  </POU>\n</TcPlcObject>\n";
 
-/* Decoy for the HTTP-service-pattern-named receiver check below (finding 1):
- * its own SendRequest must lose to the ST receiver-typed one on FB_Http. */
+/* HTTP-service-pattern-named receiver (HttpClient : FB_Http): its own
+ * SendRequest is the expected target; FB_Decoy's same-named SendRequest,
+ * declared above, must lose. */
 static const char ES_TCC_HTTP[] =
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
     "  <POU Name=\"FB_Http\" Id=\"{1}\" SpecialFunc=\"None\">\n"
@@ -1654,8 +1650,8 @@ static const char ES_TCC_BASE[] =
     "    </Method>\n"
     "  </POU>\n</TcPlcObject>\n";
 
-/* Cyclic EXTENDS (finding 3a): neither has method Nope. method_of_type's
- * seen-queue must terminate the breadth-first walk instead of looping. */
+/* Cyclic EXTENDS: neither has method Nope. method_of_type's seen-queue must
+ * terminate the breadth-first walk instead of looping. */
 static const char ES_TCC_CYC_A[] =
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
     "  <POU Name=\"FB_CycA\" Id=\"{1}\" SpecialFunc=\"None\">\n"
@@ -1781,15 +1777,16 @@ static int es_tcc_typed_call_fixture(bool parallel) {
     failed += !es_tc_expect_strategy(store, p, "CallItf", user, "CALLS", "st_receiver_type");
     /* Type known, method absent: no edge, not the decoy's Missing. */
     failed += !es_tc_expect(store, p, "CallMissing", user, "CALLS", NULL);
-    /* Finding 1: a receiver variable named like an HTTP client library
-     * (HttpClient) must not steer the #523 callee-name service bypass away
-     * from the exact ST receiver-type target in the parallel venue. */
+    /* A receiver variable named like an HTTP client library (HttpClient) must
+     * not steer the #523 callee-name service bypass away from the exact ST
+     * receiver-type target in the parallel venue. */
     failed += !es_tc_expect(store, p, "CallService", user, "CALLS", "LibB/POUs/FB_Http.TcPOU");
     failed += !es_tc_expect_strategy(store, p, "CallService", user, "CALLS", "st_receiver_type");
-    /* Finding 3a: cyclic EXTENDS terminates instead of looping, no edge. */
+    /* Cyclic EXTENDS terminates instead of looping, no edge — even though
+     * FB_Decoy's Nope would otherwise be a same-name registry guess. */
     failed += !es_tc_expect(store, p, "CallCycle", user, "CALLS", NULL);
-    /* Finding 3b: an unresolvable declared type falls through to the generic
-     * resolver instead of dropping the call outright. */
+    /* An unresolvable declared type falls through to the generic resolver
+     * instead of dropping the call outright. */
     failed += !es_tc_expect_none_with_strategy(store, p, "CallUntyped", user, "CALLS",
                                                "st_receiver_type");
     /* Property read: the exact member edge only, no bare-name guess at the decoy. */
