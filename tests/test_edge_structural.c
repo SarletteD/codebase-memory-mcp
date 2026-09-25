@@ -707,8 +707,7 @@ static const char ES_TC_LIBB_PROJ[] =
  * and, when `out_edges` is non-NULL, hands back ownership of the matching
  * edges array (cbm_store_free_edges when done); -1 when the source node
  * itself is not found. Shared by every check below that needs "the edges of
- * this source node" — the source-node lookup and the edge fetch used to be
- * copied into each one separately. */
+ * this source node". */
 static int es_tc_source_edges(cbm_store_t *store, const char *project, const char *name,
                               const char *file, const char *edge_type, cbm_edge_t **out_edges) {
     cbm_node_t *nodes = NULL;
@@ -1582,6 +1581,13 @@ static const char ES_TCC_TIMER[] =
     "        <Implementation><ST><![CDATA[Elapsed := T#0S;]]></ST></Implementation>\n"
     "      </Get>\n"
     "    </Property>\n"
+    "    <Property Name=\"Started\" Id=\"{11}\">\n"
+    "      <Declaration><![CDATA[PROPERTY Started : BOOL\n]]></Declaration>\n"
+    "      <Get Name=\"Get\" Id=\"{12}\">\n"
+    "        <Declaration><![CDATA[VAR\nEND_VAR\n]]></Declaration>\n"
+    "        <Implementation><ST><![CDATA[Started := TRUE;]]></ST></Implementation>\n"
+    "      </Get>\n"
+    "    </Property>\n"
     "  </POU>\n</TcPlcObject>\n";
 
 /* Same method names as everything the user calls: the generic resolver's decoy. */
@@ -1709,6 +1715,11 @@ static const char ES_TCC_USER[] =
     "</Declaration>\n"
     "      <Implementation><ST><![CDATA[t := _timer.Elapsed;]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Method Name=\"ReadUnique\" Id=\"{10}\">\n"
+    "      <Declaration><![CDATA[METHOD ReadUnique : BOOL\nVAR\n\tb : BOOL;\nEND_VAR\n]]>"
+    "</Declaration>\n"
+    "      <Implementation><ST><![CDATA[b := _timer.Started;]]></ST></Implementation>\n"
+    "    </Method>\n"
     "  </POU>\n</TcPlcObject>\n";
 
 static int es_tcc_typed_call_fixture(bool parallel) {
@@ -1801,6 +1812,19 @@ static int es_tcc_typed_call_fixture(bool parallel) {
     if (to_timer != 1 || to_decoy != 0) {
         fprintf(stderr, "  [ES-TCC] ReadProp USAGE: timer=%d decoy=%d (want 1/0)\n", to_timer,
                 to_decoy);
+        failed++;
+    }
+    /* Property unique to FB_Timer: the bare-name registry hit and the exact
+     * member hit land on the same node, and that edge must still survive. */
+    char unique_targets[8][ES_TC_PATH];
+    int nu = es_tc_edge_targets(store, p, "ReadUnique", user, "USAGE", unique_targets, 8);
+    int to_timer_unique = 0;
+    for (int i = 0; i < nu && i < 8; i++) {
+        to_timer_unique += strcmp(unique_targets[i], "LibA/POUs/FB_Timer.TcPOU") == 0;
+    }
+    if (nu != 1 || to_timer_unique != 1) {
+        fprintf(stderr, "  [ES-TCC] ReadUnique USAGE: count=%d timer=%d (want 1/1)\n", nu,
+                to_timer_unique);
         failed++;
     }
     if (failed) {

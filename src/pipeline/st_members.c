@@ -469,12 +469,16 @@ void cbm_st_usage_agg_add(cbm_st_usage_agg_t *agg, const cbm_gbuf_node_t *src,
     if (!agg || !src || !usage) {
         return;
     }
-    /* An exact member hit makes the bare-name registry guess for the same
-     * token redundant at best and wrong at worst (another FB's property). */
+    /* An exact member hit is authoritative and always contributes its edge,
+     * including when the bare-name registry guess landed on the same node
+     * (the common case: a property/field whose name is unique in the
+     * project). The bare-name edge is only useful as a fallback when the
+     * member did not resolve — otherwise it would be redundant at best and
+     * wrong at worst (another FB's property of the same name). */
     if (tgt && !member) {
         agg_add(agg, src->id, tgt->id, usage->ref_name, usage->start_line);
     }
-    if (member && member != tgt) {
+    if (member) {
         /* The member edge names the full token so a reader sees which enum it is. */
         char callee[CBM_SZ_512];
         snprintf(callee, sizeof(callee), "%s.%s",
