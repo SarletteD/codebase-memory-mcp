@@ -1192,6 +1192,10 @@ static void pxc_append_synthetic_calls(CBMArena *dst_arena, CBMCallArray *dst_ca
             src->first_string_arg ? cbm_arena_strdup(dst_arena, src->first_string_arg) : NULL;
         dst.second_arg_name =
             src->second_arg_name ? cbm_arena_strdup(dst_arena, src->second_arg_name) : NULL;
+        dst.member_qualifier =
+            src->member_qualifier ? cbm_arena_strdup(dst_arena, src->member_qualifier) : NULL;
+        dst.qualifier_type =
+            src->qualifier_type ? cbm_arena_strdup(dst_arena, src->qualifier_type) : NULL;
         dst.args = NULL;
         if (src->args && src->arg_count > 0) {
             dst.args = cbm_arena_calloc(dst_arena, (size_t)src->arg_count * sizeof(CBMCallArg));
