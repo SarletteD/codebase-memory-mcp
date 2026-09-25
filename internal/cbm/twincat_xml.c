@@ -28,6 +28,8 @@
  */
 #include "twincat_xml.h"
 
+#include "foundation/mem_core.h" // per-file transient: freed inside one extraction call
+
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,7 +65,7 @@ static void tb_reserve(TcBuf *b, size_t extra) {
     while (cap < need) {
         cap *= 2;
     }
-    char *np = (char *)realloc(b->p, cap);
+    char *np = (char *)cbm_realloc(CBM_MEM_CLASS_EXTRACT, b->p, cap);
     if (!np) {
         b->oom = true;
         return;
@@ -90,7 +92,7 @@ static void tb_putc(TcBuf *b, char c) {
 }
 
 static void tb_free(TcBuf *b) {
-    free(b->p);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, b->p);
     memset(b, 0, sizeof(*b));
 }
 
@@ -109,7 +111,8 @@ static void tl_push(TcLines *l, uint32_t line) {
     }
     if (l->n == l->cap) {
         uint32_t cap = l->cap ? l->cap * 2 : (uint32_t)TC_BUF_INIT;
-        uint32_t *nv = (uint32_t *)realloc(l->v, (size_t)cap * sizeof(uint32_t));
+        uint32_t *nv =
+            (uint32_t *)cbm_realloc(CBM_MEM_CLASS_EXTRACT, l->v, (size_t)cap * sizeof(uint32_t));
         if (!nv) {
             l->oom = true;
             return;
@@ -929,7 +932,8 @@ typedef struct {
 static int model_add(TcModel *m, TcKind kind, int parent, uint32_t line) {
     if (m->count == m->cap) {
         int cap = m->cap ? m->cap * 2 : TC_MAX_DEPTH;
-        TcNode *nn = (TcNode *)realloc(m->nodes, (size_t)cap * sizeof(TcNode));
+        TcNode *nn =
+            (TcNode *)cbm_realloc(CBM_MEM_CLASS_EXTRACT, m->nodes, (size_t)cap * sizeof(TcNode));
         if (!nn) {
             m->oom = true;
             return -1;
@@ -950,7 +954,7 @@ static void model_free(TcModel *m) {
         tb_free(&m->nodes[i].decl);
         tb_free(&m->nodes[i].impl);
     }
-    free(m->nodes);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, m->nodes);
     memset(m, 0, sizeof(*m));
 }
 
@@ -1375,8 +1379,8 @@ static void collect_enum_bases(const char *s, size_t n, CBMTwinCATUnit *out) {
         if (m >= n || s[m] != ';' || k - j >= sizeof(out->enum_bases[0].base)) {
             continue;
         }
-        CBMTwinCATEnumBase *grown =
-            realloc(out->enum_bases, (out->enum_base_count + 1) * sizeof(*grown));
+        CBMTwinCATEnumBase *grown = cbm_realloc(CBM_MEM_CLASS_EXTRACT, out->enum_bases,
+                                                (out->enum_base_count + 1) * sizeof(*grown));
         if (!grown) {
             return;
         }
@@ -1441,8 +1445,8 @@ bool cbm_twincat_to_st(const char *xml, int xml_len, CBMTwinCATUnit *out) {
                      : cbm_twincat_normalize(a.out.p ? a.out.p : "", (int)a.out.len, &norm_len);
     tb_free(&a.out);
     if (!norm) {
-        free(a.map.v);
-        free(out->enum_bases);
+        cbm_free(CBM_MEM_CLASS_EXTRACT, a.map.v);
+        cbm_free(CBM_MEM_CLASS_EXTRACT, out->enum_bases);
         memset(out, 0, sizeof(*out));
         return false;
     }
@@ -1459,9 +1463,9 @@ void cbm_twincat_unit_free(CBMTwinCATUnit *unit) {
     if (!unit) {
         return;
     }
-    free(unit->text);
-    free(unit->xml_line);
-    free(unit->enum_bases);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, unit->text);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, unit->xml_line);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, unit->enum_bases);
     memset(unit, 0, sizeof(*unit));
 }
 

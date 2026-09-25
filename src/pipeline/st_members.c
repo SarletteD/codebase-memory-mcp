@@ -36,6 +36,7 @@
  */
 #include "foundation/constants.h"
 #include "foundation/hash_table.h"
+#include "foundation/mem_core.h" // aggregator is per-pass scratch, like pass_lsp_cross.c's
 #include "foundation/str_util.h"
 #include "pipeline/pipeline.h"
 #include "pipeline/pipeline_internal.h"
@@ -507,13 +508,13 @@ struct cbm_st_usage_agg {
 };
 
 cbm_st_usage_agg_t *cbm_st_usage_agg_new(void) {
-    cbm_st_usage_agg_t *agg = calloc(1, sizeof(*agg));
+    cbm_st_usage_agg_t *agg = cbm_calloc(CBM_MEM_CLASS_OTHER, sizeof(*agg));
     if (!agg) {
         return NULL;
     }
     agg->by_pair = cbm_ht_create(0);
     if (!agg->by_pair) {
-        free(agg);
+        cbm_free(CBM_MEM_CLASS_OTHER, agg);
         return NULL;
     }
     return agg;
@@ -536,23 +537,24 @@ static void agg_add(cbm_st_usage_agg_t *agg, int64_t src, int64_t tgt, const cha
     }
     if (agg->count == agg->cap) {
         int ncap = agg->cap ? agg->cap * 2 : 64;
-        st_occ_t **grown = realloc(agg->items, (size_t)ncap * sizeof(*grown));
+        st_occ_t **grown =
+            cbm_realloc(CBM_MEM_CLASS_OTHER, agg->items, (size_t)ncap * sizeof(*grown));
         if (!grown) {
             return;
         }
         agg->items = grown;
         agg->cap = ncap;
     }
-    occ = calloc(1, sizeof(*occ));
-    char *key_copy = strdup(key);
+    occ = cbm_calloc(CBM_MEM_CLASS_OTHER, sizeof(*occ));
+    char *key_copy = cbm_mem_strdup(CBM_MEM_CLASS_OTHER, key);
     if (!occ || !key_copy) {
-        free(occ);
-        free(key_copy);
+        cbm_free(CBM_MEM_CLASS_OTHER, occ);
+        cbm_free(CBM_MEM_CLASS_OTHER, key_copy);
         return;
     }
     occ->src = src;
     occ->tgt = tgt;
-    occ->callee = callee ? strdup(callee) : NULL;
+    occ->callee = callee ? cbm_mem_strdup(CBM_MEM_CLASS_OTHER, callee) : NULL;
     occ->line = line;
     occ->count = 1;
     agg->items[agg->count++] = occ;
@@ -586,7 +588,7 @@ void cbm_st_usage_agg_add(cbm_st_usage_agg_t *agg, const cbm_gbuf_node_t *src,
 static void free_key(const char *key, void *value, void *userdata) {
     (void)value;
     (void)userdata;
-    free((void *)key);
+    cbm_free(CBM_MEM_CLASS_OTHER, (void *)key);
 }
 
 int cbm_st_usage_agg_flush(cbm_st_usage_agg_t *agg, cbm_gbuf_t *gbuf) {
@@ -606,12 +608,12 @@ int cbm_st_usage_agg_flush(cbm_st_usage_agg_t *agg, cbm_gbuf_t *gbuf) {
         if (gbuf && cbm_gbuf_insert_edge(gbuf, occ->src, occ->tgt, "USAGE", props) > 0) {
             edges++;
         }
-        free(occ->callee);
-        free(occ);
+        cbm_free(CBM_MEM_CLASS_OTHER, occ->callee);
+        cbm_free(CBM_MEM_CLASS_OTHER, occ);
     }
-    free(agg->items);
+    cbm_free(CBM_MEM_CLASS_OTHER, agg->items);
     cbm_ht_foreach(agg->by_pair, free_key, NULL);
     cbm_ht_free(agg->by_pair);
-    free(agg);
+    cbm_free(CBM_MEM_CLASS_OTHER, agg);
     return edges;
 }

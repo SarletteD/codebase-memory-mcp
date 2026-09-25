@@ -27,6 +27,7 @@
 #include "foundation/compat_fs.h"
 #include "foundation/compat_thread.h"
 #include "foundation/hash_table.h"
+#include "foundation/mem_core.h" // .plcproj cache is per-pass scratch, like pass_lsp_cross.c's
 #include "cbm.h"
 
 #include <stdio.h>
@@ -96,7 +97,7 @@ static char *dup_trimmed(const char *s, size_t len) {
     while (len > 0 && is_ws(s[len - 1])) {
         len--;
     }
-    char *out = malloc(len + 1);
+    char *out = cbm_alloc(CBM_MEM_CLASS_OTHER, len + 1);
     if (out) {
         memcpy(out, s, len);
         out[len] = '\0';
@@ -188,32 +189,34 @@ static void project_free(tc_project_t *p) {
         return;
     }
     for (int i = 0; i < p->ref_count; i++) {
-        free(p->alias[i]);
-        free(p->target[i]);
+        cbm_free(CBM_MEM_CLASS_OTHER, p->alias[i]);
+        cbm_free(CBM_MEM_CLASS_OTHER, p->target[i]);
     }
-    free(p->alias);
-    free(p->target);
-    free(p->title);
-    free(p);
+    cbm_free(CBM_MEM_CLASS_OTHER, p->alias);
+    cbm_free(CBM_MEM_CLASS_OTHER, p->target);
+    cbm_free(CBM_MEM_CLASS_OTHER, p->title);
+    cbm_free(CBM_MEM_CLASS_OTHER, p);
 }
 
 static void project_add_ref(tc_project_t *p, char *alias, char *target) {
     if (!alias || !target || !alias[0] || !target[0]) {
-        free(alias);
-        free(target);
+        cbm_free(CBM_MEM_CLASS_OTHER, alias);
+        cbm_free(CBM_MEM_CLASS_OTHER, target);
         return;
     }
-    char **na = realloc(p->alias, (size_t)(p->ref_count + 1) * sizeof(char *));
+    char **na =
+        cbm_realloc(CBM_MEM_CLASS_OTHER, p->alias, (size_t)(p->ref_count + 1) * sizeof(char *));
     if (na) {
         p->alias = na;
     }
-    char **nt = realloc(p->target, (size_t)(p->ref_count + 1) * sizeof(char *));
+    char **nt =
+        cbm_realloc(CBM_MEM_CLASS_OTHER, p->target, (size_t)(p->ref_count + 1) * sizeof(char *));
     if (nt) {
         p->target = nt;
     }
     if (!na || !nt) {
-        free(alias);
-        free(target);
+        cbm_free(CBM_MEM_CLASS_OTHER, alias);
+        cbm_free(CBM_MEM_CLASS_OTHER, target);
         return;
     }
     p->alias[p->ref_count] = alias;
@@ -248,7 +251,7 @@ static char *placeholder_title(const char *s, const char *end, const char *inc, 
 }
 
 static tc_project_t *project_parse(const char *s, size_t n, const char *file_name) {
-    tc_project_t *p = calloc(1, sizeof(*p));
+    tc_project_t *p = cbm_calloc(CBM_MEM_CLASS_OTHER, sizeof(*p));
     if (!p) {
         return NULL;
     }
@@ -302,7 +305,7 @@ static tc_project_t *project_load(cbm_tc_ns_t *ns, const char *path, const char 
     if (fseek(f, 0, SEEK_END) == 0) {
         long size = ftell(f);
         if (size > 0 && size <= TC_NS_PLCPROJ_MAX_BYTES && fseek(f, 0, SEEK_SET) == 0) {
-            buf = malloc((size_t)size);
+            buf = cbm_alloc(CBM_MEM_CLASS_OTHER, (size_t)size);
             if (buf) {
                 n = fread(buf, 1, (size_t)size, f);
             }
@@ -313,13 +316,13 @@ static tc_project_t *project_load(cbm_tc_ns_t *ns, const char *path, const char 
         return NULL;
     }
     tc_project_t *p = project_parse(buf, n, file_name);
-    free(buf);
+    cbm_free(CBM_MEM_CLASS_OTHER, buf);
     if (!p || !p->title) {
         project_free(p);
         return NULL;
     }
-    tc_project_t **grown =
-        realloc(ns->projects, (size_t)(ns->project_count + 1) * sizeof(tc_project_t *));
+    tc_project_t **grown = cbm_realloc(CBM_MEM_CLASS_OTHER, ns->projects,
+                                       (size_t)(ns->project_count + 1) * sizeof(tc_project_t *));
     if (!grown) {
         project_free(p);
         return NULL;
@@ -381,7 +384,7 @@ static const tc_project_t *project_of_dir(cbm_tc_ns_t *ns, const char *rel_dir) 
         found = (tc_project_t *)project_of_dir(ns, parent);
     }
 
-    char *key = strdup(rel_dir);
+    char *key = cbm_mem_strdup(CBM_MEM_CLASS_OTHER, rel_dir);
     if (key) {
         cbm_ht_set(ns->dir_project, key, found ? found : &TC_NO_PROJECT);
     }
@@ -409,13 +412,13 @@ cbm_tc_ns_t *cbm_tc_ns_new(const char *repo_path) {
     if (!repo_path || !repo_path[0]) {
         return NULL;
     }
-    cbm_tc_ns_t *ns = calloc(1, sizeof(*ns));
+    cbm_tc_ns_t *ns = cbm_calloc(CBM_MEM_CLASS_OTHER, sizeof(*ns));
     if (!ns) {
         return NULL;
     }
-    ns->repo_path = strdup(repo_path);
+    ns->repo_path = cbm_mem_strdup(CBM_MEM_CLASS_OTHER, repo_path);
     if (!ns->repo_path) {
-        free(ns);
+        cbm_free(CBM_MEM_CLASS_OTHER, ns);
         return NULL;
     }
     cbm_mutex_init(&ns->mu);
@@ -425,7 +428,7 @@ cbm_tc_ns_t *cbm_tc_ns_new(const char *repo_path) {
 static void free_key(const char *key, void *value, void *userdata) {
     (void)value;
     (void)userdata;
-    free((void *)key);
+    cbm_free(CBM_MEM_CLASS_OTHER, (void *)key);
 }
 
 void cbm_tc_ns_free(cbm_tc_ns_t *ns) {
@@ -439,10 +442,10 @@ void cbm_tc_ns_free(cbm_tc_ns_t *ns) {
     for (int i = 0; i < ns->project_count; i++) {
         project_free(ns->projects[i]);
     }
-    free(ns->projects);
+    cbm_free(CBM_MEM_CLASS_OTHER, ns->projects);
     cbm_mutex_destroy(&ns->mu);
-    free(ns->repo_path);
-    free(ns);
+    cbm_free(CBM_MEM_CLASS_OTHER, ns->repo_path);
+    cbm_free(CBM_MEM_CLASS_OTHER, ns);
 }
 
 bool cbm_tc_ns_same_library(cbm_tc_ns_t *ns, const char *rel_a, const char *rel_b) {
