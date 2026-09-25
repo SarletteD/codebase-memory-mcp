@@ -300,7 +300,11 @@ const cbm_gbuf_node_t *cbm_st_resolve_member(cbm_tc_ns_t *ns, const cbm_registry
     return owner ? field_of(gbuf, owner, usage->ref_name) : NULL;
 }
 
-/* Bases walked per lookup; deeper hierarchies are not real ST code. */
+/* Bases walked per lookup; deeper hierarchies are not real ST code. A
+ * hierarchy that truncates against this cap before the method is found
+ * reports CBM_ST_CALL_NOT_FOUND (no edge) exactly like a hierarchy that
+ * never had the method at all — the walk cannot tell "not found yet" from
+ * "not found ever" once it stops queuing further bases. */
 #define ST_MAX_BASES 32
 
 /* Next base name in a JSON string array starting at *p ("[\"A\",\"B\"]"),
@@ -337,8 +341,14 @@ static const cbm_gbuf_node_t *method_of_type(const st_resolve_ctx_t *rc,
                 return m;
             }
         }
-        const char *bases = t->properties_json ? strstr(t->properties_json, "\"base_classes\":[")
-                                               : NULL;
+        /* base_classes is written by append_json_str_array (pass_definitions.c
+         * / pass_parallel.c build_def_props): plain `,"base_classes":["A","B"]`,
+         * no escaping. Scanning it with strstr/strchr instead of a JSON parser
+         * relies on that — a base name never carries a quote or bracket, which
+         * holds for every ST identifier (is_plain_type_name's character set,
+         * plus the dots a qualified base contributes). */
+        const char *bases =
+            t->properties_json ? strstr(t->properties_json, "\"base_classes\":[") : NULL;
         const char *end = bases ? strchr(bases, ']') : NULL;
         if (!bases || !end) {
             continue;
@@ -360,9 +370,8 @@ static const cbm_gbuf_node_t *method_of_type(const st_resolve_ctx_t *rc,
 }
 
 cbm_st_call_status_t cbm_st_resolve_call(cbm_tc_ns_t *ns, const cbm_registry_t *reg,
-                                         const cbm_gbuf_t *gbuf, const char *rel,
-                                         CBMLanguage lang, const CBMCall *call,
-                                         const cbm_gbuf_node_t **out_method) {
+                                         const cbm_gbuf_t *gbuf, const char *rel, CBMLanguage lang,
+                                         const CBMCall *call, const cbm_gbuf_node_t **out_method) {
     *out_method = NULL;
     if (!reg || !gbuf || !rel || !call || !call->callee_name || !call->qualifier_type ||
         !call->member_qualifier || !call->member_qualifier[0]) {

@@ -758,6 +758,101 @@ static int es_tc_expect(cbm_store_t *store, const char *project, const char *nam
     return ok;
 }
 
+/* Source node id of `name` defined in `file`, or 0 when not found. Shared by
+ * the strategy-property checks below (es_tc_edge_targets duplicates this
+ * lookup instead of calling out to it — kept separate to avoid touching that
+ * already-covered helper). */
+static int64_t es_tc_source_id(cbm_store_t *store, const char *project, const char *name,
+                               const char *file) {
+    cbm_node_t *nodes = NULL;
+    int count = 0;
+    int64_t source_id = 0;
+    if (cbm_store_find_nodes_by_name(store, project, name, &nodes, &count) != CBM_STORE_OK) {
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        if (nodes[i].file_path && strcmp(nodes[i].file_path, file) == 0) {
+            source_id = nodes[i].id;
+        }
+    }
+    cbm_store_free_nodes(nodes, count);
+    return source_id;
+}
+
+/* Expect exactly one `edge_type` edge from (name, file) whose "strategy"
+ * property equals want_strategy (edge properties JSON, e.g.
+ * {"...,"strategy":"st_receiver_type",...}). Proves the FOUND branch of
+ * cbm_st_resolve_call actually fired, rather than a same-name guess that
+ * happens to land on the right target by accident. */
+static bool es_tc_expect_strategy(cbm_store_t *store, const char *project, const char *name,
+                                  const char *file, const char *edge_type,
+                                  const char *want_strategy) {
+    int64_t source_id = es_tc_source_id(store, project, name, file);
+    if (source_id == 0) {
+        fprintf(stderr, "  [ES-TC] FAIL %s (%s) %s strategy: source node not found\n", name, file,
+                edge_type);
+        return false;
+    }
+    cbm_edge_t *edges = NULL;
+    int edge_count = 0;
+    if (cbm_store_find_edges_by_source_type(store, source_id, edge_type, &edges, &edge_count) !=
+        CBM_STORE_OK) {
+        return false;
+    }
+    bool ok = false;
+    if (edge_count == 1) {
+        char needle[ES_TC_PATH];
+        snprintf(needle, sizeof(needle), "\"strategy\":\"%s\"", want_strategy);
+        ok = edges[0].properties_json && strstr(edges[0].properties_json, needle) != NULL;
+        if (!ok) {
+            fprintf(stderr, "  [ES-TC] FAIL %s (%s) %s strategy: got %s, want \"%s\"\n", name, file,
+                    edge_type, edges[0].properties_json ? edges[0].properties_json : "(null)",
+                    want_strategy);
+        }
+    } else {
+        fprintf(stderr, "  [ES-TC] FAIL %s (%s) %s strategy: got %d edge(s), want exactly 1\n",
+                name, file, edge_type, edge_count);
+    }
+    cbm_store_free_edges(edges, edge_count);
+    return ok;
+}
+
+/* Expect at least one `edge_type` edge from (name, file), none of them
+ * carrying want_strategy — the UNTYPED-fall-through counterpart of
+ * es_tc_expect_strategy: proves the generic resolver is still reachable when
+ * the receiver's declared type does not resolve at all. */
+static bool es_tc_expect_none_with_strategy(cbm_store_t *store, const char *project,
+                                            const char *name, const char *file,
+                                            const char *edge_type, const char *avoid_strategy) {
+    int64_t source_id = es_tc_source_id(store, project, name, file);
+    if (source_id == 0) {
+        fprintf(stderr, "  [ES-TC] FAIL %s (%s) %s strategy: source node not found\n", name, file,
+                edge_type);
+        return false;
+    }
+    cbm_edge_t *edges = NULL;
+    int edge_count = 0;
+    if (cbm_store_find_edges_by_source_type(store, source_id, edge_type, &edges, &edge_count) !=
+        CBM_STORE_OK) {
+        return false;
+    }
+    char needle[ES_TC_PATH];
+    snprintf(needle, sizeof(needle), "\"strategy\":\"%s\"", avoid_strategy);
+    bool ok = edge_count >= 1;
+    for (int i = 0; ok && i < edge_count; i++) {
+        if (edges[i].properties_json && strstr(edges[i].properties_json, needle)) {
+            ok = false;
+        }
+    }
+    if (!ok) {
+        fprintf(stderr,
+                "  [ES-TC] FAIL %s (%s) %s strategy: got %d edge(s), want >=1 without \"%s\"\n",
+                name, file, edge_type, edge_count, avoid_strategy);
+    }
+    cbm_store_free_edges(edges, edge_count);
+    return ok;
+}
+
 /* Index the two-library fixture (padded past the parallel threshold when asked)
  * and return the number of failed expectations. */
 static int es_tc_namespace_fixture(bool parallel) {
@@ -1513,6 +1608,25 @@ static const char ES_TCC_DECOY[] =
     "      <Declaration><![CDATA[METHOD Missing : BOOL\n]]></Declaration>\n"
     "      <Implementation><ST><![CDATA[Missing := TRUE;]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Method Name=\"SendRequest\" Id=\"{6}\">\n"
+    "      <Declaration><![CDATA[METHOD SendRequest : BOOL\nVAR_INPUT\n\tpath : "
+    "STRING;\nEND_VAR\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[SendRequest := TRUE;]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "  </POU>\n</TcPlcObject>\n";
+
+/* Decoy for the HTTP-service-pattern-named receiver check below (finding 1):
+ * its own SendRequest must lose to the ST receiver-typed one on FB_Http. */
+static const char ES_TCC_HTTP[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <POU Name=\"FB_Http\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+    "    <Declaration><![CDATA[FUNCTION_BLOCK FB_Http\nVAR\nEND_VAR\n]]></Declaration>\n"
+    "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
+    "    <Method Name=\"SendRequest\" Id=\"{2}\">\n"
+    "      <Declaration><![CDATA[METHOD SendRequest : BOOL\nVAR_INPUT\n\tpath : "
+    "STRING;\nEND_VAR\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[SendRequest := TRUE;]]></ST></Implementation>\n"
+    "    </Method>\n"
     "  </POU>\n</TcPlcObject>\n";
 
 static const char ES_TCC_BASE[] =
@@ -1526,11 +1640,30 @@ static const char ES_TCC_BASE[] =
     "    </Method>\n"
     "  </POU>\n</TcPlcObject>\n";
 
+/* Cyclic EXTENDS (finding 3a): neither has method Nope. method_of_type's
+ * seen-queue must terminate the breadth-first walk instead of looping. */
+static const char ES_TCC_CYC_A[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <POU Name=\"FB_CycA\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+    "    <Declaration><![CDATA[FUNCTION_BLOCK FB_CycA EXTENDS FB_CycB\nVAR\nEND_VAR\n"
+    "]]></Declaration>\n"
+    "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
+    "  </POU>\n</TcPlcObject>\n";
+
+static const char ES_TCC_CYC_B[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
+    "  <POU Name=\"FB_CycB\" Id=\"{1}\" SpecialFunc=\"None\">\n"
+    "    <Declaration><![CDATA[FUNCTION_BLOCK FB_CycB EXTENDS FB_CycA\nVAR\nEND_VAR\n"
+    "]]></Declaration>\n"
+    "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
+    "  </POU>\n</TcPlcObject>\n";
+
 static const char ES_TCC_USER[] =
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<TcPlcObject Version=\"1.1.0.1\">\n"
     "  <POU Name=\"FB_User\" Id=\"{1}\" SpecialFunc=\"None\">\n"
     "    <Declaration><![CDATA[FUNCTION_BLOCK FB_User\nVAR\n"
     "\t_timer : Ns_A.FB_Timer;\n\t_derived : FB_Derived;\n\t_runner : I_Runner;\n"
+    "\tHttpClient : FB_Http;\n\t_cyc : FB_CycA;\n\t_ext : Ns_Unknown.FB_Nowhere;\n"
     "END_VAR\n]]></Declaration>\n"
     "    <Implementation><ST><![CDATA[]]></ST></Implementation>\n"
     "    <Method Name=\"CallTimer\" Id=\"{2}\">\n"
@@ -1549,6 +1682,18 @@ static const char ES_TCC_USER[] =
     "      <Declaration><![CDATA[METHOD CallMissing : BOOL\n]]></Declaration>\n"
     "      <Implementation><ST><![CDATA[_timer.Missing();]]></ST></Implementation>\n"
     "    </Method>\n"
+    "    <Method Name=\"CallService\" Id=\"{6}\">\n"
+    "      <Declaration><![CDATA[METHOD CallService : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[HttpClient.SendRequest('/api');]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "    <Method Name=\"CallCycle\" Id=\"{7}\">\n"
+    "      <Declaration><![CDATA[METHOD CallCycle : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_cyc.Nope();]]></ST></Implementation>\n"
+    "    </Method>\n"
+    "    <Method Name=\"CallUntyped\" Id=\"{8}\">\n"
+    "      <Declaration><![CDATA[METHOD CallUntyped : BOOL\n]]></Declaration>\n"
+    "      <Implementation><ST><![CDATA[_ext.Start();]]></ST></Implementation>\n"
+    "    </Method>\n"
     "  </POU>\n</TcPlcObject>\n";
 
 static int es_tcc_typed_call_fixture(bool parallel) {
@@ -1560,7 +1705,10 @@ static int es_tcc_typed_call_fixture(bool parallel) {
     files[n++] = (ES_LangFile){"LibB/LibB.plcproj", ES_TC_LIBB_PROJ};
     files[n++] = (ES_LangFile){"LibA/POUs/FB_Timer.TcPOU", ES_TCC_TIMER};
     files[n++] = (ES_LangFile){"LibB/POUs/FB_Decoy.TcPOU", ES_TCC_DECOY};
+    files[n++] = (ES_LangFile){"LibB/POUs/FB_Http.TcPOU", ES_TCC_HTTP};
     files[n++] = (ES_LangFile){"LibB/POUs/FB_Base.TcPOU", ES_TCC_BASE};
+    files[n++] = (ES_LangFile){"LibB/POUs/FB_CycA.TcPOU", ES_TCC_CYC_A};
+    files[n++] = (ES_LangFile){"LibB/POUs/FB_CycB.TcPOU", ES_TCC_CYC_B};
     files[n++] = (ES_LangFile){"LibB/POUs/FB_User.TcPOU", ES_TCC_USER};
     snprintf(bodies[n], sizeof(bodies[n]), ES_TC_POU, "FB_Derived",
              "FUNCTION_BLOCK FB_Derived EXTENDS FB_Base");
@@ -1603,12 +1751,28 @@ static int es_tcc_typed_call_fixture(bool parallel) {
     int failed = 0;
     /* Qualified declared type through the .plcproj alias, decoy ignored. */
     failed += !es_tc_expect(store, p, "CallTimer", user, "CALLS", "LibA/POUs/FB_Timer.TcPOU");
-    /* Method found on the EXTENDS base. */
+    failed += !es_tc_expect_strategy(store, p, "CallTimer", user, "CALLS", "st_receiver_type");
+    /* Method found on the EXTENDS base. FB_Decoy also has a Reset, so the
+     * strategy check is what proves the base walk fired rather than a
+     * same-name guess landing on FB_Base by coincidence. */
     failed += !es_tc_expect(store, p, "CallInherited", user, "CALLS", "LibB/POUs/FB_Base.TcPOU");
+    failed += !es_tc_expect_strategy(store, p, "CallInherited", user, "CALLS", "st_receiver_type");
     /* Interface-typed receiver binds the interface's method. */
     failed += !es_tc_expect(store, p, "CallItf", user, "CALLS", "LibB/POUs/I_Runner.TcIO");
+    failed += !es_tc_expect_strategy(store, p, "CallItf", user, "CALLS", "st_receiver_type");
     /* Type known, method absent: no edge, not the decoy's Missing. */
     failed += !es_tc_expect(store, p, "CallMissing", user, "CALLS", NULL);
+    /* Finding 1: a receiver variable named like an HTTP client library
+     * (HttpClient) must not steer the #523 callee-name service bypass away
+     * from the exact ST receiver-type target in the parallel venue. */
+    failed += !es_tc_expect(store, p, "CallService", user, "CALLS", "LibB/POUs/FB_Http.TcPOU");
+    failed += !es_tc_expect_strategy(store, p, "CallService", user, "CALLS", "st_receiver_type");
+    /* Finding 3a: cyclic EXTENDS terminates instead of looping, no edge. */
+    failed += !es_tc_expect(store, p, "CallCycle", user, "CALLS", NULL);
+    /* Finding 3b: an unresolvable declared type falls through to the generic
+     * resolver instead of dropping the call outright. */
+    failed += !es_tc_expect_none_with_strategy(store, p, "CallUntyped", user, "CALLS",
+                                               "st_receiver_type");
     if (failed) {
         es_dump_edge_histogram(store, p);
     }

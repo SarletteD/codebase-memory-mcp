@@ -524,8 +524,8 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, cbm_tc_ns_t *tc_ns, CBMC
      * decides, exact or nothing (st_members.c). */
     if (cbm_st_lang(lang)) {
         const cbm_gbuf_node_t *st_target = NULL;
-        cbm_st_call_status_t st = cbm_st_resolve_call(tc_ns, ctx->registry, ctx->gbuf, rel, lang,
-                                                      call, &st_target);
+        cbm_st_call_status_t st =
+            cbm_st_resolve_call(tc_ns, ctx->registry, ctx->gbuf, rel, lang, call, &st_target);
         if (st == CBM_ST_CALL_NOT_FOUND) {
             return 0;
         }

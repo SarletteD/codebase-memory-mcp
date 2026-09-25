@@ -2905,7 +2905,16 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                 ws->lsp_overrides++;
             }
         }
-        /* Structured Text typed receiver — the sequential twin is in pass_calls.c. */
+        /* Structured Text typed receiver — the sequential twin is in pass_calls.c.
+         * st_exact marks a FOUND result so it reaches emit_service_edge exactly
+         * as the sequential venue's emit_classified_edge does: the sequential
+         * ST FOUND branch returns immediately (pass_calls.c), before it would
+         * ever reach the #523 callee-name HTTP/ASYNC bypass below. The parallel
+         * venue instead falls through the rest of this loop body, so that same
+         * bypass must be gated off for a FOUND result or a receiver variable
+         * that merely LOOKS like a service client name (e.g. `HttpClient`) would
+         * get HTTP_CALLS here and CALLS (st_receiver_type) sequentially. */
+        bool st_exact = false;
         if (cbm_st_lang(lang) && !lsp_target) {
             const cbm_gbuf_node_t *st_target = NULL;
             cbm_st_call_status_t st = cbm_st_resolve_call(rc->tc_ns, rc->registry, rc->main_gbuf,
@@ -2919,6 +2928,7 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                 res.strategy = "st_receiver_type";
                 res.confidence = 1.0;
                 res.candidate_count = 1;
+                st_exact = true;
             }
         }
         /* #1085: fall back to the registry resolver whenever the LSP did not
@@ -3008,7 +3018,7 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
          * ASYNC_CALLS edge is emitted regardless (target is a synthesized route
          * node, not the unindexed library). Mirrors pass_calls.c. (#523) */
         cbm_svc_kind_t csvc = cbm_service_pattern_match(call->callee_name);
-        if (csvc == CBM_SVC_HTTP || csvc == CBM_SVC_ASYNC) {
+        if (!st_exact && (csvc == CBM_SVC_HTTP || csvc == CBM_SVC_ASYNC)) {
             const char *cu = call->first_string_arg;
             bool chas_url = cu && cu[0] != '\0' &&
                             (cu[0] == '/' || strstr(cu, "://") != NULL ||
