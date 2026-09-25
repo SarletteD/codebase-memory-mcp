@@ -315,6 +315,8 @@ static void cr_walk(cr_ctx_t *c, CBMFileResult *r) {
     for (int i = 0; i < r->usages.count && r->usages.items; i++) {
         cr_str(c, &r->usages.items[i].ref_name);
         cr_str(c, &r->usages.items[i].enclosing_func_qn);
+        cr_str(c, &r->usages.items[i].member_qualifier);
+        cr_str(c, &r->usages.items[i].qualifier_type);
     }
     cr_array(c, (void **)&r->throws.items, r->throws.count, sizeof(CBMThrow));
     for (int i = 0; i < r->throws.count && r->throws.items; i++) {
