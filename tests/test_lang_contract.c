@@ -743,6 +743,81 @@ TEST(contract_chialisp_constant_resolves_across_files) {
     PASS();
 }
 
+/* Edges of `type` leaving source_id whose target is named target_name. */
+static int st_edge_to(cbm_store_t *store, int64_t source_id, const char *type,
+                      const char *target_name) {
+    cbm_edge_t *edges = NULL;
+    int nedges = 0;
+    if (cbm_store_find_edges_by_source_type(store, source_id, type, &edges, &nedges) !=
+        CBM_STORE_OK) {
+        return 0;
+    }
+    int found = 0;
+    for (int i = 0; i < nedges; i++) {
+        cbm_node_t dst;
+        if (cbm_store_find_node_by_id(store, edges[i].target_id, &dst) != CBM_STORE_OK) {
+            continue;
+        }
+        if (dst.name && strcmp(dst.name, target_name) == 0) {
+            found++;
+        }
+        cbm_node_free_fields(&dst);
+    }
+    cbm_store_free_edges(edges, nedges);
+    return found;
+}
+
+/* Structured Text end to end: a FUNCTION_BLOCK that EXTENDS one in another
+ * file, with a METHOD exported after its END_FUNCTION_BLOCK (the vendor export
+ * layout) that calls the base block's method. The graph must hold the
+ * INHERITS edge, the method's CALLS edge, and the method at its file line. */
+TEST(contract_st_exported_member_inherits_and_calls) {
+    static const LangFile f[] = {{"FB_Base.st", "FUNCTION_BLOCK FB_Base\n"
+                                                "VAR\n"
+                                                "  count : INT;\n"
+                                                "END_VAR\n"
+                                                "METHOD Reset : BOOL\n"
+                                                "count := 0;\n"
+                                                "Reset := TRUE;\n"
+                                                "END_METHOD\n"
+                                                "END_FUNCTION_BLOCK\n"},
+                                 {"FB_Axis.st", "FUNCTION_BLOCK FB_Axis EXTENDS FB_Base\n" /* 1 */
+                                                "VAR\n"                                    /* 2 */
+                                                "  moves : INT;\n"                         /* 3 */
+                                                "END_VAR\n"                                /* 4 */
+                                                "moves := moves + 1;\n"                    /* 5 */
+                                                "END_FUNCTION_BLOCK\n"                     /* 6 */
+                                                "\n"                                       /* 7 */
+                                                "METHOD Home : BOOL\n"                     /* 8 */
+                                                "Home := Reset();\n"                       /* 9 */
+                                                "END_METHOD\n"}};                          /* 10 */
+    LangProj lp;
+    cbm_store_t *store = lang_index_files(&lp, f, 2);
+    ASSERT_TRUE(store != NULL);
+
+    cbm_node_t *axis = NULL;
+    int naxis = 0;
+    ASSERT_EQ(cbm_store_find_nodes_by_name(store, lp.project, "FB_Axis", &axis, &naxis),
+              CBM_STORE_OK);
+    ASSERT_TRUE(naxis >= 1);
+    int inherits = st_edge_to(store, axis[0].id, "INHERITS", "FB_Base");
+
+    cbm_node_t *home = NULL;
+    int nhome = 0;
+    ASSERT_EQ(cbm_store_find_nodes_by_name(store, lp.project, "Home", &home, &nhome), CBM_STORE_OK);
+    ASSERT_TRUE(nhome >= 1);
+    int home_line = home[0].start_line;
+    int calls = st_edge_to(store, home[0].id, "CALLS", "Reset");
+
+    cbm_store_free_nodes(home, nhome);
+    cbm_store_free_nodes(axis, naxis);
+    lang_cleanup(&lp, store);
+    ASSERT_EQ(inherits, 1);
+    ASSERT_EQ(calls, 1);
+    ASSERT_EQ(home_line, 8);
+    PASS();
+}
+
 TEST(contract_all_grammars_in_graph) {
     int n = (int)CBM_GRAMMAR_CASES_COUNT;
     if (n > GRAMMAR_BREADTH_MAX) {
@@ -1914,6 +1989,7 @@ SUITE(lang_contract) {
 
     /* Graph-level breadth across all grammars (P4). */
     RUN_TEST(contract_chialisp_constant_resolves_across_files);
+    RUN_TEST(contract_st_exported_member_inherits_and_calls);
     RUN_TEST(contract_all_grammars_in_graph);
 
     /* CALLS-edge breadth across non-LSP languages (P5). */

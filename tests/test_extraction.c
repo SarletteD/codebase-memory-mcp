@@ -20,6 +20,7 @@
 #include "helpers.h"                    /* cbm_count_branching (walker stack cap) */
 #include "lang_specs.h"                 /* cbm_lang_spec, cbm_ts_language */
 #include "st_dialect.h"                 /* cbm_st_normalize */
+#include "st_unit.h"                    /* cbm_st_unit_build, cbm_st_unit_line */
 #include "../src/foundation/mem_core.h" /* cbm_free, CBM_MEM_CLASS_EXTRACT */
 
 /* Deep-nesting probes: extraction on a worker-sized stack, crash-isolated. */
@@ -12155,6 +12156,603 @@ TEST(st_program_becomes_function_block_only_for_its_own_members) {
     PASS();
 }
 
+/* ── ST export layout: members after END_FUNCTION_BLOCK (st_unit) ────────── */
+
+/* The export layout: body statements before END_FUNCTION_BLOCK, the members
+ * after it, and a PROPERTY without END_PROPERTY. */
+static const char ST_TRAILING_SRC[] = "FUNCTION_BLOCK FB_Axis EXTENDS FB_Base\n" /* 1 */
+                                      "VAR_INPUT\n"                              /* 2 */
+                                      "  AxesGroup : INT;\n"                     /* 3 */
+                                      "END_VAR\n"                                /* 4 */
+                                      "VAR\n"                                    /* 5 */
+                                      "  _count : INT;\n"                        /* 6 */
+                                      "END_VAR\n"                                /* 7 */
+                                      "\n"                                       /* 8 */
+                                      "  SUPER^(AxesGroup := AxesGroup);\n"      /* 9 */
+                                      "  _count := _count + 1;\n"                /* 10 */
+                                      "END_FUNCTION_BLOCK\n"                     /* 11 */
+                                      "\n"                                       /* 12 */
+                                      "/// Resets the counter\n"                 /* 13 */
+                                      "METHOD INTERNAL Reset : BOOL\n"           /* 14 */
+                                      "VAR_INPUT\n"                              /* 15 */
+                                      "  Force : BOOL;\n"                        /* 16 */
+                                      "END_VAR\n"                                /* 17 */
+                                      "_count := 0;\n"                           /* 18 */
+                                      "Reset := Clamp(Force);\n"                 /* 19 */
+                                      "END_METHOD\n"                             /* 20 */
+                                      "\n"                                       /* 21 */
+                                      "METHOD PROTECTED Check : BOOL\n"          /* 22 */
+                                      "Check := _count > 0;\n"                   /* 23 */
+                                      "END_METHOD\n"                             /* 24 */
+                                      "\n"                                       /* 25 */
+                                      "PROPERTY Count : INT\n"                   /* 26 */
+                                      "GET\n"                                    /* 27 */
+                                      "Count := _count;\n"                       /* 28 */
+                                      "END_GET\n"                                /* 29 */
+                                      "SET\n"                                    /* 30 */
+                                      "_count := Count;\n"                       /* 31 */
+                                      "END_SET\n";                               /* 32 */
+
+static const CBMCall *st_call(const CBMFileResult *r, const char *callee) {
+    for (int i = 0; i < r->calls.count; i++) {
+        if (r->calls.items[i].callee_name && strcmp(r->calls.items[i].callee_name, callee) == 0)
+            return &r->calls.items[i];
+    }
+    return NULL;
+}
+
+static int st_member_of(const CBMDefinition *member, const CBMDefinition *owner) {
+    return member && owner && member->parent_class && owner->qualified_name &&
+           strcmp(member->parent_class, owner->qualified_name) == 0;
+}
+
+/* Byte span of 1-based line `line` in `s` (without its newline). */
+static const char *st_line_at(const char *s, uint32_t line, size_t *len) {
+    for (uint32_t l = 1; l < line && *s; s++) {
+        if (*s == '\n')
+            l++;
+    }
+    const char *e = strchr(s, '\n');
+    *len = e ? (size_t)(e - s) : strlen(s);
+    return s;
+}
+
+/* Every original line appears exactly once in the parser text, each parser
+ * line starts with the text of the original line it maps to (a synthesized
+ * END_PROPERTY may follow), and the map breaks its +1 step only `breaks`
+ * times. */
+static int st_unit_is_line_permutation(const char *src, const CBMStUnit *u, int breaks) {
+    uint32_t n = 1;
+    for (const char *p = src; *p; p++)
+        n += *p == '\n';
+    if (!u->src_line || u->lines < n)
+        return 0;
+    int seen[64] = {0};
+    if (n >= 64)
+        return 0;
+    int steps = 0;
+    for (uint32_t k = 1; k <= u->lines; k++) {
+        uint32_t o = cbm_st_unit_line(u, k);
+        if (o == 0 || o > n)
+            return 0;
+        if (k <= n && seen[o]++)
+            return 0;
+        size_t ol = 0;
+        size_t pl = 0;
+        const char *os = st_line_at(src, o, &ol);
+        const char *ps = st_line_at(u->text, k, &pl);
+        if (k <= n && (pl < ol || memcmp(os, ps, ol) != 0))
+            return 0;
+        if (k > 1 && o != cbm_st_unit_line(u, k - 1) + 1)
+            steps++;
+    }
+    for (uint32_t o = 1; o <= n; o++) {
+        if (seen[o] != 1)
+            return 0;
+    }
+    return steps == breaks;
+}
+
+/* The unit moves the trailing members to just after the last END_VAR and the
+ * body statements behind them; every original line is kept exactly once and
+ * each moved block keeps its internal order. */
+TEST(st_unit_reorders_trailing_members_as_a_line_permutation) {
+    CBMStUnit u;
+    ASSERT(cbm_st_unit_build(ST_TRAILING_SRC, (int)strlen(ST_TRAILING_SRC), &u));
+    ASSERT_NOT_NULL(u.src_line);
+    /* order 1..7, 12..32 (members), 8..11 (body, END_FUNCTION_BLOCK), 33 */
+    ASSERT(st_unit_is_line_permutation(ST_TRAILING_SRC, &u, 3));
+    ASSERT_EQ((int)cbm_st_unit_line(&u, 8), 12);
+    ASSERT_EQ((int)cbm_st_unit_line(&u, 28), 32);
+    ASSERT_EQ((int)cbm_st_unit_line(&u, 29), 8);
+    ASSERT_EQ((int)cbm_st_unit_line(&u, 32), 11);
+    ASSERT(strstr(u.text, "END_SET END_PROPERTY\n") != NULL);
+    cbm_st_unit_free(&u);
+    PASS();
+}
+
+/* Keywords inside comments and strings are never structure, an ACTION between
+ * trailing members stays in place, and a moved last line without a newline
+ * still yields a line permutation. */
+TEST(st_unit_skips_comments_strings_and_actions) {
+    static const char SRC[] = "FUNCTION_BLOCK FB_C\n"                   /* 1 */
+                              "VAR\n"                                   /* 2 */
+                              "  s : STRING := 'END_FUNCTION_BLOCK';\n" /* 3 */
+                              "END_VAR\n"                               /* 4 */
+                              "(* METHOD Fake : BOOL\n"                 /* 5 */
+                              "END_METHOD *)\n"                         /* 6 */
+                              "s := '';\n"                              /* 7 */
+                              "END_FUNCTION_BLOCK\n"                    /* 8 */
+                              "METHOD A : BOOL\n"                       /* 9 */
+                              "END_METHOD // METHOD B\n"                /* 10 */
+                              "ACTION Act:\n"                           /* 11 */
+                              "s := 'x';\n"                             /* 12 */
+                              "END_ACTION\n"                            /* 13 */
+                              "METHOD C : BOOL\n"                       /* 14 */
+                              "END_METHOD";                             /* 15 */
+    CBMStUnit u;
+    ASSERT(cbm_st_unit_build(SRC, (int)strlen(SRC), &u));
+    /* order 1..4, 9..10, 14..15, 5..8, 11..13, then an empty parser line
+     * (mapped to 15) opened by the newline the moved last line gained */
+    ASSERT(st_unit_is_line_permutation(SRC, &u, 5));
+    ASSERT_EQ((int)u.lines, 16);
+    ASSERT_EQ((int)cbm_st_unit_line(&u, 5), 9);
+    ASSERT_EQ((int)cbm_st_unit_line(&u, 7), 14);
+    ASSERT_EQ((int)cbm_st_unit_line(&u, 9), 5);
+    ASSERT_EQ((int)cbm_st_unit_line(&u, 13), 11);
+    cbm_st_unit_free(&u);
+    PASS();
+}
+
+/* Members exported after END_FUNCTION_BLOCK belong to the block: the file
+ * parses cleanly and every definition and call reports its original line. */
+TEST(st_trailing_members_attach_to_function_block) {
+    CBMFileResult *r = extract(ST_TRAILING_SRC, CBM_LANG_ST, "t", "Axis.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *fb = st_def(r, "FB_Axis");
+    const CBMDefinition *reset = st_def(r, "Reset");
+    const CBMDefinition *check = st_def(r, "Check");
+    const CBMDefinition *count = st_def(r, "Count");
+    ASSERT_NOT_NULL(fb);
+    ASSERT_NOT_NULL(reset);
+    ASSERT_NOT_NULL(check);
+    ASSERT_NOT_NULL(count);
+    ASSERT_STR_EQ(reset->label, "Method");
+    ASSERT_STR_EQ(check->label, "Method");
+    ASSERT_STR_EQ(count->label, "Field");
+    ASSERT(st_member_of(reset, fb));
+    ASSERT(st_member_of(check, fb));
+    ASSERT(st_member_of(count, fb));
+    ASSERT_EQ((int)fb->start_line, 1);
+    ASSERT_EQ((int)fb->end_line, 32); /* spans its exported members */
+    ASSERT_EQ((int)reset->start_line, 14);
+    ASSERT_EQ((int)reset->end_line, 20);
+    ASSERT_EQ((int)check->start_line, 22);
+    ASSERT_EQ((int)count->start_line, 26);
+    ASSERT_EQ((int)count->end_line, 32);
+    const CBMCall *clamp = st_call(r, "Clamp");
+    ASSERT_NOT_NULL(clamp);
+    ASSERT_EQ(clamp->start_line, 19);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* Members already inside the block need no reorder: identity map, original
+ * lines unchanged. */
+TEST(st_members_inside_block_keep_identity_lines) {
+    static const char SRC[] = "FUNCTION_BLOCK FB_Motor\n"    /* 1 */
+                              "VAR\n"                        /* 2 */
+                              "  _running : BOOL;\n"         /* 3 */
+                              "END_VAR\n"                    /* 4 */
+                              "METHOD PUBLIC Start : BOOL\n" /* 5 */
+                              "Start := Go(1);\n"            /* 6 */
+                              "END_METHOD\n"                 /* 7 */
+                              "_running := TRUE;\n"          /* 8 */
+                              "END_FUNCTION_BLOCK\n";        /* 9 */
+    CBMStUnit u;
+    ASSERT(cbm_st_unit_build(SRC, (int)strlen(SRC), &u));
+    ASSERT_NULL(u.src_line);
+    ASSERT_STR_EQ(u.text, SRC);
+    cbm_st_unit_free(&u);
+    CBMFileResult *r = extract(SRC, CBM_LANG_ST, "t", "Motor.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *fb = st_def(r, "FB_Motor");
+    const CBMDefinition *m = st_def(r, "Start");
+    ASSERT(st_member_of(m, fb));
+    ASSERT_EQ((int)fb->end_line, 9);
+    ASSERT_EQ((int)m->start_line, 5);
+    ASSERT_EQ(st_call(r, "Go")->start_line, 6);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* Two blocks in one file, each followed by its own members, with a FUNCTION
+ * between them, lowercase keywords, END_FUNCTION_BLOCK followed by ';' or a
+ * comment, and a last line without a newline: each member lands in its own
+ * block at its original line. */
+TEST(st_trailing_members_of_two_blocks) {
+    static const char SRC[] = "FUNCTION_BLOCK FB_One\n"      /* 1 */
+                              "VAR\n"                        /* 2 */
+                              "  a : INT;\n"                 /* 3 */
+                              "END_VAR\n"                    /* 4 */
+                              "a := 1;\n"                    /* 5 */
+                              "END_FUNCTION_BLOCK;\n"        /* 6 */
+                              "METHOD Ping : BOOL\n"         /* 7 */
+                              "Ping := Probe(a);\n"          /* 8 */
+                              "END_METHOD\n"                 /* 9 */
+                              "PROPERTY Level : INT\n"       /* 10 */
+                              "GET\n"                        /* 11 */
+                              "Level := a;\n"                /* 12 */
+                              "END_GET\n"                    /* 13 */
+                              "END_PROPERTY\n"               /* 14 */
+                              "\n"                           /* 15 */
+                              "FUNCTION Helper : INT\n"      /* 16 */
+                              "Helper := 1;\n"               /* 17 */
+                              "END_FUNCTION\n"               /* 18 */
+                              "\n"                           /* 19 */
+                              "function_block FB_Two\n"      /* 20 */
+                              "var\n"                        /* 21 */
+                              "  b : INT;\n"                 /* 22 */
+                              "end_var\n"                    /* 23 */
+                              "b := Helper();\n"             /* 24 */
+                              "end_function_block // done\n" /* 25 */
+                              "method Pong : BOOL\n"         /* 26 */
+                              "Pong := Probe(b);\n"          /* 27 */
+                              "end_method";                  /* 28 */
+    CBMFileResult *r = extract(SRC, CBM_LANG_ST, "t", "Two.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *one = st_def(r, "FB_One");
+    const CBMDefinition *two = st_def(r, "FB_Two");
+    const CBMDefinition *ping = st_def(r, "Ping");
+    const CBMDefinition *level = st_def(r, "Level");
+    const CBMDefinition *pong = st_def(r, "Pong");
+    const CBMDefinition *helper = st_def(r, "Helper");
+    ASSERT(st_member_of(ping, one));
+    ASSERT(st_member_of(level, one));
+    ASSERT(st_member_of(pong, two));
+    ASSERT_EQ((int)one->end_line, 14);
+    ASSERT_EQ((int)ping->start_line, 7);
+    ASSERT_EQ((int)level->start_line, 10);
+    ASSERT_EQ((int)level->end_line, 14);
+    ASSERT_EQ((int)helper->start_line, 16);
+    ASSERT_EQ((int)two->start_line, 20);
+    ASSERT_EQ((int)two->end_line, 28);
+    ASSERT_EQ((int)pong->start_line, 26);
+    ASSERT_EQ((int)pong->end_line, 28);
+    int probe_lines = 0;
+    for (int i = 0; i < r->calls.count; i++) {
+        if (strcmp(r->calls.items[i].callee_name, "Probe") == 0)
+            probe_lines += r->calls.items[i].start_line;
+    }
+    ASSERT_EQ(probe_lines, 8 + 27);
+    ASSERT_EQ(st_call(r, "Helper")->start_line, 24);
+    for (int i = 0; i < r->defs.count; i++) {
+        if (strcmp(r->defs.items[i].label, "Module") == 0) {
+            ASSERT_EQ((int)r->defs.items[i].start_line, 1);
+            ASSERT_EQ((int)r->defs.items[i].end_line, 28);
+        }
+    }
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A parse error inside a moved member is reported at its original line. */
+TEST(st_trailing_member_error_range_uses_original_lines) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_E\n" /* 1 */
+                               "VAR\n"                 /* 2 */
+                               "  x : INT;\n"          /* 3 */
+                               "END_VAR\n"             /* 4 */
+                               "x := 1;\n"             /* 5 */
+                               "END_FUNCTION_BLOCK\n"  /* 6 */
+                               "METHOD Bad : BOOL\n"   /* 7 */
+                               "Bad := ;\n"            /* 8 */
+                               "END_METHOD\n",         /* 9 */
+                               CBM_LANG_ST, "t", "Bad.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT(r->parse_incomplete);
+    ASSERT_NOT_NULL(r->error_ranges);
+    ASSERT_STR_EQ(r->error_ranges, "8-8");
+    cbm_free_result(r);
+    PASS();
+}
+
+/* Mapped error ranges are listed in file order, although the moved member's
+ * error comes first in the parser text. */
+TEST(st_error_ranges_are_sorted_in_original_order) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_S\n" /* 1 */
+                               "VAR\n"                 /* 2 */
+                               "  x : INT;\n"          /* 3 */
+                               "END_VAR\n"             /* 4 */
+                               "x := ;\n"              /* 5 */
+                               "END_FUNCTION_BLOCK\n"  /* 6 */
+                               "METHOD Bad : BOOL\n"   /* 7 */
+                               "Bad := ;\n"            /* 8 */
+                               "END_METHOD\n",         /* 9 */
+                               CBM_LANG_ST, "t", "Sort.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT(r->parse_incomplete);
+    ASSERT_NOT_NULL(r->error_ranges);
+    ASSERT_STR_EQ(r->error_ranges, "5-5,8-8");
+    ASSERT_EQ(r->error_region_count, 2);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A whole-parser-text range maps back to one whole-file range; ranges come
+ * out sorted, adjacent ones merged, and what exceeds the cap is counted. */
+TEST(st_unit_map_ranges_splits_sorts_and_merges) {
+    CBMStUnit u;
+    ASSERT(cbm_st_unit_build(ST_TRAILING_SRC, (int)strlen(ST_TRAILING_SRC), &u));
+    ASSERT_NOT_NULL(u.src_line);
+    uint32_t os[4];
+    uint32_t oe[4];
+    int dropped = 0;
+    const uint32_t whole_s[] = {1};
+    const uint32_t whole_e[] = {u.lines};
+    ASSERT_EQ(cbm_st_unit_map_ranges(&u, whole_s, whole_e, 1, os, oe, 4, &dropped), 1);
+    ASSERT_EQ((int)os[0], 1);
+    ASSERT_EQ((int)oe[0], 33);
+    /* parser 29 -> 8, parser 8 -> 12, parser 7 -> 7 */
+    const uint32_t two_s[] = {29, 8};
+    const uint32_t two_e[] = {29, 8};
+    ASSERT_EQ(cbm_st_unit_map_ranges(&u, two_s, two_e, 2, os, oe, 4, &dropped), 2);
+    ASSERT_EQ((int)os[0], 8);
+    ASSERT_EQ((int)os[1], 12);
+    const uint32_t adj_s[] = {29, 7};
+    const uint32_t adj_e[] = {29, 7};
+    ASSERT_EQ(cbm_st_unit_map_ranges(&u, adj_s, adj_e, 2, os, oe, 4, &dropped), 1);
+    ASSERT_EQ((int)os[0], 7);
+    ASSERT_EQ((int)oe[0], 8);
+    ASSERT_EQ(dropped, 0);
+    ASSERT_EQ(cbm_st_unit_map_ranges(&u, two_s, two_e, 2, os, oe, 1, &dropped), 1);
+    ASSERT_EQ(dropped, 1);
+    cbm_st_unit_free(&u);
+    PASS();
+}
+
+/* A body statement whose first word merely starts with VAR_ opens no VAR
+ * block: the block still takes its exported members. */
+TEST(st_body_statement_named_like_a_var_section) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_V\n" /* 1 */
+                               "VAR\n"                 /* 2 */
+                               "  Var_Count : INT;\n"  /* 3 */
+                               "END_VAR\n"             /* 4 */
+                               "Var_Count := 1;\n"     /* 5 */
+                               "END_FUNCTION_BLOCK\n"  /* 6 */
+                               "METHOD Reset : BOOL\n" /* 7 */
+                               "Var_Count := 0;\n"     /* 8 */
+                               "END_METHOD\n",         /* 9 */
+                               CBM_LANG_ST, "t", "Vars.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *fb = st_def(r, "FB_V");
+    const CBMDefinition *m = st_def(r, "Reset");
+    ASSERT(st_member_of(m, fb));
+    ASSERT_EQ((int)m->start_line, 7);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A block that never reaches its END_FUNCTION_BLOCK must not borrow the next
+ * block's terminator and exported members. */
+TEST(st_unterminated_block_keeps_next_blocks_members) {
+    static const char SRC[] = "FUNCTION_BLOCK FB_Broken\n" /* 1 */
+                              "VAR\n"                      /* 2 */
+                              "  a : INT;\n"               /* 3 */
+                              "END_VAR\n"                  /* 4 */
+                              "a := 1;\n"                  /* 5 */
+                              "FUNCTION_BLOCK FB_Next\n"   /* 6 */
+                              "VAR\n"                      /* 7 */
+                              "  b : INT;\n"               /* 8 */
+                              "END_VAR\n"                  /* 9 */
+                              "b := 2;\n"                  /* 10 */
+                              "END_FUNCTION_BLOCK\n"       /* 11 */
+                              "METHOD Run : BOOL\n"        /* 12 */
+                              "Run := TRUE;\n"             /* 13 */
+                              "END_METHOD\n";              /* 14 */
+    CBMStUnit u;
+    ASSERT(cbm_st_unit_build(SRC, (int)strlen(SRC), &u));
+    /* order 1..9, 12..14, 10..11, 15 */
+    ASSERT(st_unit_is_line_permutation(SRC, &u, 3));
+    ASSERT_EQ((int)cbm_st_unit_line(&u, 5), 5);
+    ASSERT_EQ((int)cbm_st_unit_line(&u, 10), 12);
+    cbm_st_unit_free(&u);
+    PASS();
+}
+
+/* A PROGRAM's members exported after its END_PROGRAM make it a
+ * FUNCTION_BLOCK too, and they attach to it like a block's members. */
+TEST(st_program_members_after_end_program) {
+    CBMFileResult *r = extract("PROGRAM P_Cell\n"      /* 1 */
+                               "VAR\n"                 /* 2 */
+                               "  n : INT;\n"          /* 3 */
+                               "END_VAR\n"             /* 4 */
+                               "n := n + 1;\n"         /* 5 */
+                               "END_PROGRAM\n"         /* 6 */
+                               "METHOD Clear : BOOL\n" /* 7 */
+                               "n := 0;\n"             /* 8 */
+                               "END_METHOD\n",         /* 9 */
+                               CBM_LANG_ST, "t", "Cell.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *clear = st_def(r, "Clear");
+    ASSERT(st_member_of(clear, st_def(r, "P_Cell")));
+    ASSERT_EQ((int)clear->start_line, 7);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* GET/SET open an accessor only as a line of their own: a body statement
+ * assigning a variable named Get ends the property instead. */
+TEST(st_property_tail_needs_a_standalone_accessor) {
+    static const char SRC[] = "FUNCTION_BLOCK FB_G\n"  /* 1 */
+                              "VAR\n"                  /* 2 */
+                              "  n : INT;\n"           /* 3 */
+                              "END_VAR\n"              /* 4 */
+                              "PROPERTY Level : INT\n" /* 5 */
+                              "GET\n"                  /* 6 */
+                              "Level := n;\n"          /* 7 */
+                              "END_GET\n"              /* 8 */
+                              "Get := n;\n"            /* 9 */
+                              "END_FUNCTION_BLOCK\n"   /* 10 */
+                              "METHOD Tick : BOOL\n"   /* 11 */
+                              "Tick := TRUE;\n"        /* 12 */
+                              "END_METHOD\n";          /* 13 */
+    CBMStUnit u;
+    ASSERT(cbm_st_unit_build(SRC, (int)strlen(SRC), &u));
+    ASSERT_NOT_NULL(u.src_line);
+    ASSERT_EQ((int)cbm_st_unit_line(&u, 9), 11);
+    ASSERT(strstr(u.text, "END_GET END_PROPERTY\n") != NULL);
+    cbm_st_unit_free(&u);
+    PASS();
+}
+
+/* A property that cannot move (its end shares a line with other code) gets
+ * no END_PROPERTY either. */
+TEST(st_property_tail_skipped_when_member_stays) {
+    static const char SRC[] = "FUNCTION_BLOCK FB_T\n"         /* 1 */
+                              "VAR\n"                         /* 2 */
+                              "  n : INT;\n"                  /* 3 */
+                              "END_VAR\n"                     /* 4 */
+                              "n := 1;\n"                     /* 5 */
+                              "END_FUNCTION_BLOCK\n"          /* 6 */
+                              "PROPERTY Level : INT\n"        /* 7 */
+                              "GET\n"                         /* 8 */
+                              "Level := n;\n"                 /* 9 */
+                              "END_GET METHOD Stray : BOOL\n" /* 10 */
+                              "END_METHOD\n";                 /* 11 */
+    CBMStUnit u;
+    ASSERT(cbm_st_unit_build(SRC, (int)strlen(SRC), &u));
+    ASSERT_NULL(u.src_line);
+    ASSERT(strstr(u.text, "END_PROPERTY") == NULL);
+    cbm_st_unit_free(&u);
+    PASS();
+}
+
+/* A ';' after END_GET, END_SET or END_METHOD would be an empty body
+ * statement once the member moves into the block, turning every later member
+ * into an error; the export layout still parses cleanly. */
+TEST(st_semicolon_after_member_terminator) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_Semi\n" /* 1 */
+                               "VAR\n"                    /* 2 */
+                               "  n : INT;\n"             /* 3 */
+                               "END_VAR\n"                /* 4 */
+                               "n := 1;\n"                /* 5 */
+                               "END_FUNCTION_BLOCK\n"     /* 6 */
+                               "PROPERTY Level : INT\n"   /* 7 */
+                               "GET\n"                    /* 8 */
+                               "Level := n;\n"            /* 9 */
+                               "END_GET;\n"               /* 10 */
+                               "SET\n"                    /* 11 */
+                               "n := Level;\n"            /* 12 */
+                               "END_SET;\n"               /* 13 */
+                               "METHOD Tick : BOOL\n"     /* 14 */
+                               "Tick := TRUE;\n"          /* 15 */
+                               "END_METHOD;\n"            /* 16 */
+                               "METHOD Tock : BOOL\n"     /* 17 */
+                               "Tock := FALSE;\n"         /* 18 */
+                               "END_METHOD\n",            /* 19 */
+                               CBM_LANG_ST, "t", "Semi.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *fb = st_def(r, "FB_Semi");
+    const CBMDefinition *level = st_def(r, "Level");
+    const CBMDefinition *tock = st_def(r, "Tock");
+    ASSERT(st_member_of(level, fb));
+    ASSERT(st_member_of(st_def(r, "Tick"), fb));
+    ASSERT(st_member_of(tock, fb));
+    ASSERT_EQ((int)level->start_line, 7);
+    ASSERT_EQ((int)level->end_line, 13);
+    ASSERT_EQ((int)tock->start_line, 17);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* An INTERFACE exported with its members after END_INTERFACE owns them. */
+TEST(st_interface_members_after_end_interface) {
+    CBMFileResult *r = extract("INTERFACE I_Drive\n"     /* 1 */
+                               "END_INTERFACE\n"         /* 2 */
+                               "\n"                      /* 3 */
+                               "METHOD Start : BOOL\n"   /* 4 */
+                               "VAR_INPUT\n"             /* 5 */
+                               "  Speed : INT;\n"        /* 6 */
+                               "END_VAR\n"               /* 7 */
+                               "END_METHOD\n"            /* 8 */
+                               "PROPERTY Ready : BOOL\n" /* 9 */
+                               "GET\n"                   /* 10 */
+                               "END_GET\n",              /* 11 */
+                               CBM_LANG_ST, "t", "I_Drive.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *itf = st_def(r, "I_Drive");
+    const CBMDefinition *start = st_def(r, "Start");
+    const CBMDefinition *ready = st_def(r, "Ready");
+    ASSERT(st_member_of(start, itf));
+    ASSERT(st_member_of(ready, itf));
+    ASSERT_EQ((int)start->start_line, 4);
+    ASSERT_EQ((int)start->end_line, 8);
+    ASSERT_EQ((int)ready->start_line, 9);
+    ASSERT_EQ((int)itf->start_line, 1);
+    ASSERT_EQ((int)itf->end_line, 11);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* An exported INTERFACE may lack END_INTERFACE; its complete properties still
+ * get their END_PROPERTY, which keeps them in the graph. */
+TEST(st_unterminated_interface_keeps_property_tails) {
+    static const char SRC[] = "INTERFACE I_Cmd\n"
+                              "PROPERTY Data : INT\n"
+                              "GET\n"
+                              "END_GET\n"
+                              "SET\n"
+                              "END_SET\n";
+    CBMStUnit u;
+    ASSERT(cbm_st_unit_build(SRC, (int)strlen(SRC), &u));
+    ASSERT_NULL(u.src_line);
+    ASSERT(strstr(u.text, "END_SET END_PROPERTY\n") != NULL);
+    cbm_st_unit_free(&u);
+    PASS();
+}
+
+/* CRLF line ends: every definition and call keeps its file line. */
+TEST(st_crlf_export_layout_keeps_lines) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_Crlf\r\n" /* 1 */
+                               "VAR\r\n"                    /* 2 */
+                               "  n : INT;\r\n"             /* 3 */
+                               "END_VAR\r\n"                /* 4 */
+                               "n := Bump(n);\r\n"          /* 5 */
+                               "END_FUNCTION_BLOCK\r\n"     /* 6 */
+                               "METHOD Tick : BOOL\r\n"     /* 7 */
+                               "Tick := Probe(n);\r\n"      /* 8 */
+                               "END_METHOD\r\n"             /* 9 */
+                               "PROPERTY Level : INT\r\n"   /* 10 */
+                               "GET\r\n"                    /* 11 */
+                               "Level := n;\r\n"            /* 12 */
+                               "END_GET\r\n",               /* 13 */
+                               CBM_LANG_ST, "t", "Crlf.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *fb = st_def(r, "FB_Crlf");
+    const CBMDefinition *tick = st_def(r, "Tick");
+    const CBMDefinition *level = st_def(r, "Level");
+    ASSERT(st_member_of(tick, fb));
+    ASSERT(st_member_of(level, fb));
+    ASSERT_EQ((int)fb->end_line, 13);
+    ASSERT_EQ((int)tick->start_line, 7);
+    ASSERT_EQ((int)tick->end_line, 9);
+    ASSERT_EQ((int)level->start_line, 10);
+    ASSERT_EQ((int)level->end_line, 13);
+    ASSERT_EQ(st_call(r, "Bump")->start_line, 5);
+    ASSERT_EQ(st_call(r, "Probe")->start_line, 8);
+    cbm_free_result(r);
+    PASS();
+}
+
 /* ── Result compaction (cbm_result_compact) ────────────────────────────── */
 
 static const char *COMPACT_PY_SRC = "import os\n"
@@ -14204,6 +14802,23 @@ SUITE(extraction) {
     RUN_TEST(st_normalize_rewrites_every_var_section);
     RUN_TEST(st_lowercase_end_program_becomes_function_block);
     RUN_TEST(st_program_becomes_function_block_only_for_its_own_members);
+    RUN_TEST(st_unit_reorders_trailing_members_as_a_line_permutation);
+    RUN_TEST(st_unit_skips_comments_strings_and_actions);
+    RUN_TEST(st_trailing_members_attach_to_function_block);
+    RUN_TEST(st_members_inside_block_keep_identity_lines);
+    RUN_TEST(st_trailing_members_of_two_blocks);
+    RUN_TEST(st_trailing_member_error_range_uses_original_lines);
+    RUN_TEST(st_error_ranges_are_sorted_in_original_order);
+    RUN_TEST(st_unit_map_ranges_splits_sorts_and_merges);
+    RUN_TEST(st_body_statement_named_like_a_var_section);
+    RUN_TEST(st_unterminated_block_keeps_next_blocks_members);
+    RUN_TEST(st_program_members_after_end_program);
+    RUN_TEST(st_property_tail_needs_a_standalone_accessor);
+    RUN_TEST(st_property_tail_skipped_when_member_stays);
+    RUN_TEST(st_semicolon_after_member_terminator);
+    RUN_TEST(st_interface_members_after_end_interface);
+    RUN_TEST(st_crlf_export_layout_keeps_lines);
+    RUN_TEST(st_unterminated_interface_keeps_property_tails);
 
     cbm_shutdown();
 }

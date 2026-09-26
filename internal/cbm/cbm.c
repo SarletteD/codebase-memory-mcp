@@ -25,7 +25,7 @@
 #include "preprocessor.h"
 #include "sql_values.h" // #1735: literal INSERT rows kept out of the SQL parse
 #include "cpp_branch_views.h"
-#include "st_dialect.h" // cbm_st_normalize -- vendor-dialect .st source normalized before parsing
+#include "st_unit.h" // cbm_st_unit_build -- normalized, member-reordered .st parser text + line map
 #include "foundation/compat.h"
 #include "foundation/compat_fs.h"  // cbm_fopen — crash-supervisor per-file marker write
 #include "foundation/hash_table.h" // CBMHashTable — crash-supervisor quarantine set
@@ -4661,35 +4661,131 @@ void cbm_work_arena_give(CBMArena *from) {
     memset(from, 0, sizeof(*from));
 }
 
-/* Real-world .st exports (CODESYS/TwinCAT) carry vendor-dialect constructs the
- * grammar rejects by design: extraction parses a normalized transient copy, so
- * every caller — the extract passes and any cache-miss re-extract alike — sees
- * the same normalized source without a pipeline special case. Points *source
- * at the copy and returns it (NULL for any other language). A normalization
- * failure (OOM) keeps the original source rather than losing the file; every
- * pass is line-preserving, so no line remap is needed either way. */
-static char *st_normalized_source(CBMLanguage language, const char **source, int *source_len) {
-    if (language != CBM_LANG_ST) {
-        return NULL;
+/* Add one item of an error_ranges list, "a-b" or the "+N" cap marker, to *in. */
+static void st_parse_range_item(cbm_error_regions_t *in, const char *p) {
+    char *end = NULL;
+    if (p[0] == '+') {
+        long more = strtol(p + SKIP_ONE, &end, CBM_DECIMAL_BASE);
+        if (end != p + SKIP_ONE && more > 0) {
+            in->dropped += (int)more;
+        }
+        return;
     }
-    int st_len = 0;
-    char *st_buf = cbm_st_normalize(*source, *source_len, &st_len);
-    if (st_buf) {
-        *source = st_buf;
-        *source_len = st_len;
+    unsigned long first = strtoul(p, &end, CBM_DECIMAL_BASE);
+    const char *dash = end;
+    if (dash == p || *dash != '-') {
+        return;
     }
-    return st_buf;
+    unsigned long last = strtoul(dash + SKIP_ONE, &end, CBM_DECIMAL_BASE);
+    if (end == dash + SKIP_ONE || first > UINT32_MAX || last > UINT32_MAX) {
+        return;
+    }
+    if (in->count < CBM_MAX_ERROR_REGIONS) {
+        in->starts[in->count] = (uint32_t)first;
+        in->ends[in->count] = (uint32_t)last;
+        in->count++;
+    } else {
+        in->dropped++;
+    }
 }
 
-/* Frees the normalized copy; the result's tree indexes it, so it goes first. */
-static void st_release_source(CBMFileResult *result, char *st_buf) {
-    if (!st_buf) {
+/* Rewrite one error_ranges list from parser lines to original lines: a range
+ * crossing a moved block splits into its runs, and the result is sorted and
+ * merged in file order (cbm_st_unit_map_ranges). A "+N" cap marker is carried
+ * into the dropped count and so stays the trailing suffix. */
+static const char *st_remap_error_ranges(CBMArena *a, const char *ranges, const CBMStUnit *u,
+                                         int *count) {
+    cbm_error_regions_t in = {{0}, {0}, 0, 0};
+    for (const char *p = ranges; p && *p;) {
+        const char *sep = strchr(p, ',');
+        st_parse_range_item(&in, p);
+        p = sep ? sep + SKIP_ONE : p + strlen(p);
+    }
+    cbm_error_regions_t out = {{0}, {0}, 0, in.dropped};
+    out.count = cbm_st_unit_map_ranges(u, in.starts, in.ends, in.count, out.starts, out.ends,
+                                       CBM_MAX_ERROR_REGIONS, &out.dropped);
+    *count = out.count;
+    return cbm_error_ranges_str(a, &out);
+}
+
+/* Move a .st result from parser-text lines back to lines of the file.
+ * Definition spans, call lines and error_ranges carry lines; usages carry
+ * none. The Module span needs no special case: the first and last parser
+ * lines never move (members only move up, to before their block's body).
+ * Byte offsets (call and usage site_*_byte) stay parser-text relative, which
+ * is all their consumers need: they only compare offsets taken from the same
+ * buffer (the LSP join), and ST has no LSP. */
+static void st_remap_lines(CBMFileResult *r, const CBMStUnit *u) {
+    for (int i = 0; i < r->defs.count; i++) {
+        CBMDefinition *d = &r->defs.items[i];
+        uint32_t s = cbm_st_unit_line(u, d->start_line);
+        uint32_t e = cbm_st_unit_line(u, d->end_line);
+        d->start_line = s <= e ? s : e;
+        d->end_line = s <= e ? e : s;
+    }
+    /* A block's exported members now lie after its terminator line: stretch
+     * the block over them, so containment by line span (the code-snippet
+     * outline) still finds every member. */
+    for (int i = 0; i < r->defs.count; i++) {
+        CBMDefinition *owner = &r->defs.items[i];
+        if (!owner->qualified_name) {
+            continue;
+        }
+        for (int j = 0; j < r->defs.count; j++) {
+            const CBMDefinition *m = &r->defs.items[j];
+            if (m->parent_class && m->end_line > owner->end_line &&
+                strcmp(m->parent_class, owner->qualified_name) == 0) {
+                owner->end_line = m->end_line;
+            }
+        }
+    }
+    for (int i = 0; i < r->calls.count; i++) {
+        CBMCall *c = &r->calls.items[i];
+        if (c->start_line > 0) {
+            c->start_line = (int)cbm_st_unit_line(u, (uint32_t)c->start_line);
+        }
+    }
+    if (r->error_ranges && r->error_ranges[0]) {
+        int count = r->error_region_count;
+        const char *mapped = st_remap_error_ranges(&r->arena, r->error_ranges, u, &count);
+        if (mapped) {
+            r->error_ranges = mapped;
+            r->error_region_count = count;
+        }
+    }
+}
+
+/* Real-world .st exports (CODESYS/TwinCAT) carry vendor-dialect constructs the
+ * grammar rejects by design and write a block's members after its
+ * END_FUNCTION_BLOCK: extraction parses a transient parser text, so every
+ * caller — the extract passes and any cache-miss re-extract alike — sees the
+ * same text without a pipeline special case. Points *source at that text and
+ * returns true (false for any other language). A build failure (OOM) keeps the
+ * original source rather than losing the file; st_release_source maps a moved
+ * member back to its file line. */
+static bool st_parser_source(CBMLanguage language, const char **source, int *source_len,
+                             CBMStUnit *u) {
+    if (language != CBM_LANG_ST || !cbm_st_unit_build(*source, *source_len, u)) {
+        return false;
+    }
+    *source = u->text;
+    *source_len = u->len;
+    return true;
+}
+
+/* Maps a result built from the parser text back to file lines and frees that
+ * text; the result's tree indexes it, so the tree goes first. */
+static void st_release_source(CBMFileResult *result, CBMStUnit *u, bool live) {
+    if (!live) {
         return;
     }
     if (result) {
         cbm_free_tree(result);
+        if (u->src_line) {
+            st_remap_lines(result, u);
+        }
     }
-    cbm_free(CBM_MEM_CLASS_EXTRACT, st_buf);
+    cbm_st_unit_free(u);
 }
 
 /* Public entry. Owns the traversal scratch arena for the whole of one file's
@@ -4716,7 +4812,8 @@ CBMFileResult *cbm_extract_file_ex_with_tests(
     const char *rel_path, int64_t timeout_micros, const char **extra_defines,
     const char **include_paths, const CBMMacroTable *macro_table,
     const CBMReturnTypeTable *return_type_table, const cbm_test_declarations_t *test_declarations) {
-    char *st_buf = st_normalized_source(language, &source, &source_len);
+    CBMStUnit st_unit = {0};
+    bool st_live = st_parser_source(language, &source, &source_len, &st_unit);
     CBMArena scratch;
     if (tl_scratch_live && tl_scratch_slot) {
         scratch = *tl_scratch_slot;
@@ -4778,7 +4875,7 @@ CBMFileResult *cbm_extract_file_ex_with_tests(
         cbm_arena_destroy(&scratch);
     }
     cbm_test_declarations_degrade(result);
-    st_release_source(result, st_buf);
+    st_release_source(result, &st_unit, st_live);
     return result;
 }
 
