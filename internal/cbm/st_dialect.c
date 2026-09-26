@@ -1143,6 +1143,45 @@ static void pass_modifier(StBuf *out, const char *s, size_t n) {
     cp_flush(&c, n);
 }
 
+/* End of the access modifier to drop after "GET" / "SET" at s[j] on the line
+ * s[., eol), or 0: the modifier must be the last code on the line. */
+static size_t accessor_modifier_end(const char *s, size_t eol, size_t j) {
+    size_t kl = ST_LIT_LEN("GET");
+    if (!(ci_at(s, eol, j, "GET") || ci_at(s, eol, j, "SET")) || !ends_word(s, eol, j + kl)) {
+        return 0;
+    }
+    size_t k = need_blanks(s, eol, j + kl);
+    size_t ml = k ? modifier_at(s, eol, k) : 0;
+    if (!ml || !ends_word(s, eol, k + ml)) {
+        return 0;
+    }
+    size_t m = skip_blanks(s, eol, k + ml);
+    bool rest_is_trivia =
+        m == eol || s[m] == '\r' || (s[m] != '\'' && s[m] != '"' && trivia_end(s, eol, m) > m);
+    return rest_is_trivia ? k + ml : 0;
+}
+
+/* "GET PUBLIC" / "SET PRIVATE" as a line of its own -> "GET" / "SET": TwinCAT
+ * accessors may carry an access modifier, the grammar's accessor has none. A
+ * statement such as "Set := n;" never matches (the modifier must follow), nor
+ * does a line inside a block comment. */
+static void pass_accessor_access(StBuf *out, const char *s, size_t n) {
+    StCopy c = {out, s, 0};
+    const char *open = NULL;
+    for (size_t i = 0; i < n;) {
+        size_t eol = line_end(s, n, i);
+        bool code_start = open == NULL;
+        (void)line_find_word(s, eol, i, &open, NULL);
+        size_t j = skip_blanks(s, eol, i);
+        size_t end = code_start ? accessor_modifier_end(s, eol, j) : 0;
+        if (end) {
+            cp_replace(&c, j + ST_LIT_LEN("GET"), end, "", 0);
+        }
+        i = line_next(n, eol);
+    }
+    cp_flush(&c, n);
+}
+
 /* End of " EXTENDS Base" after the type name ending at k, or 0. */
 static size_t type_extends_end(const char *s, size_t n, size_t k) {
     size_t m = need_blanks(s, n, k);
@@ -1236,10 +1275,12 @@ static void pass_bit_access(StBuf *out, const char *s, size_t n) {
 
 char *cbm_st_normalize(const char *src, int len, int *out_len) {
     static const StPass PASSES[] = {
-        pass_pragma,     pass_union,         pass_struct_semi, pass_empty_struct, pass_enum_base,
-        pass_at_address, pass_reference_to,  pass_var_stat,    pass_persistent,   pass_and_then,
-        pass_arr_init,   pass_ctor_args,     pass_double_semi, pass_array_star,   pass_str_len,
-        pass_pou_access, pass_program_as_fb, pass_modifier,    pass_type_extends, pass_bit_access,
+        pass_pragma,        pass_union,      pass_struct_semi,     pass_empty_struct,
+        pass_enum_base,     pass_at_address, pass_reference_to,    pass_var_stat,
+        pass_persistent,    pass_and_then,   pass_arr_init,        pass_ctor_args,
+        pass_double_semi,   pass_array_star, pass_str_len,         pass_pou_access,
+        pass_program_as_fb, pass_modifier,   pass_accessor_access, pass_type_extends,
+        pass_bit_access,
     };
     StBuf cur = {0};
     tb_put(&cur, src ? src : "", (src && len > 0) ? (size_t)len : 0);

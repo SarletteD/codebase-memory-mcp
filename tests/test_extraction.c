@@ -12867,6 +12867,64 @@ TEST(st_unterminated_interface_keeps_property_tails) {
     ASSERT_NULL(u.src_line);
     ASSERT(strstr(u.text, "END_SET END_PROPERTY\n") != NULL);
     cbm_st_unit_free(&u);
+
+    CBMFileResult *r = extract(SRC, CBM_LANG_ST, "t", "I_Cmd.st");
+    ASSERT_NOT_NULL(r);
+    const CBMDefinition *itf = st_def(r, "I_Cmd");
+    const CBMDefinition *data = st_def(r, "Data");
+    ASSERT_NOT_NULL(itf);
+    ASSERT_NOT_NULL(data);
+    ASSERT(st_member_of(data, itf));
+    ASSERT_EQ((int)data->start_line, 2);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* TwinCAT lets an accessor carry its own access modifier ("GET PUBLIC"),
+ * which the grammar has no place for. It is dropped, so the accessor still
+ * opens the property; a statement assigning a variable named Set is left
+ * alone. */
+TEST(st_accessor_access_modifier_is_dropped) {
+    static const char SRC[] = "FUNCTION_BLOCK FB_Acc\n"       /* 1 */
+                              "VAR\n"                         /* 2 */
+                              "  n : INT;\n"                  /* 3 */
+                              "  Set : INT;\n"                /* 4 */
+                              "END_VAR\n"                     /* 5 */
+                              "Set := n;\n"                   /* 6 */
+                              "END_FUNCTION_BLOCK\n"          /* 7 */
+                              "PROPERTY PUBLIC Level : INT\n" /* 8 */
+                              "GET PUBLIC\n"                  /* 9 */
+                              "Level := n;\n"                 /* 10 */
+                              "END_GET\n"                     /* 11 */
+                              "set Private // write side\n"   /* 12 */
+                              "n := Level;\n"                 /* 13 */
+                              "END_SET\n";                    /* 14 */
+    CBMStUnit u;
+    ASSERT(cbm_st_unit_build(SRC, (int)strlen(SRC), &u));
+    ASSERT_NOT_NULL(u.src_line);
+    ASSERT(strstr(u.text, "Set := n;\n") != NULL);
+    ASSERT(strstr(u.text, "PUBLIC\n") == NULL);
+    ASSERT(strstr(u.text, "Private") == NULL);
+    ASSERT(strstr(u.text, "END_SET END_PROPERTY") != NULL);
+    cbm_st_unit_free(&u);
+
+    CBMFileResult *r = extract(SRC, CBM_LANG_ST, "t", "Acc.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *fb = st_def(r, "FB_Acc");
+    const CBMDefinition *level = st_def(r, "Level");
+    ASSERT(st_member_of(level, fb));
+    ASSERT_EQ((int)level->start_line, 8);
+    ASSERT_EQ((int)level->end_line, 14);
+    cbm_free_result(r);
+
+    /* an accessor line inside a block comment stays as it is */
+    static const char COMMENTED[] = "(*\nGET PUBLIC\n*)\n";
+    int len = 0;
+    char *out = cbm_st_normalize(COMMENTED, (int)strlen(COMMENTED), &len);
+    ASSERT_NOT_NULL(out);
+    ASSERT_STR_EQ(out, COMMENTED);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, out);
     PASS();
 }
 
@@ -14973,6 +15031,7 @@ SUITE(extraction) {
     RUN_TEST(st_interface_members_after_end_interface);
     RUN_TEST(st_crlf_export_layout_keeps_lines);
     RUN_TEST(st_unterminated_interface_keeps_property_tails);
+    RUN_TEST(st_accessor_access_modifier_is_dropped);
 
     cbm_shutdown();
 }

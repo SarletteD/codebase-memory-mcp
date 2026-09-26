@@ -396,7 +396,8 @@ static bool tok_opens_accessor(const StLex *lx, const StTok *t, bool *seen_get, 
  * an END_PROPERTY is planned right after that accessor terminator. GET/SET
  * open an accessor only once each and only as the sole code on their line,
  * so a statement such as "Get := n;" after the accessors is never taken for
- * one. */
+ * one. An accessor's own access modifier ("GET PUBLIC") is already gone: the
+ * dialect pass drops it, as the grammar has no place for it either. */
 static bool skip_property(StLex *lx, StPlan *pl, uint32_t *end_line) {
     bool in_accessor = false;
     bool seen_get = false;
