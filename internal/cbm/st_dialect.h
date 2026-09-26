@@ -9,7 +9,9 @@
  * type, REFERENCE TO, access modifiers on POUs, constructor arguments and
  * array initializers inside declarations, PERSISTENT, AND_THEN/OR_ELSE,
  * hardware address bindings (AT %I*), ARRAY[*], sized STRING[n]/WSTRING[n],
- * and TYPE ... EXTENDS.
+ * TYPE ... EXTENDS, empty STRUCTs, a doubled ';' in declarations, accessor
+ * access modifiers, integer bit access (x.0) and pragmas sharing a line with
+ * code.
  *
  * Every pass preserves the number and order of newlines, so line N of the
  * normalized source is still line N of the original file: definitions are

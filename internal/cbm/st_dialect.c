@@ -5,7 +5,9 @@
  * design: pragmas, an enum's integer base type, REFERENCE TO, access
  * modifiers on POUs, constructor arguments and array initializers inside
  * declarations, PERSISTENT, AND_THEN/OR_ELSE, hardware address bindings
- * (AT %I*), ARRAY[*], sized STRING[n]/WSTRING[n], and TYPE ... EXTENDS. Each
+ * (AT %I*), ARRAY[*], sized STRING[n]/WSTRING[n], TYPE ... EXTENDS, empty
+ * STRUCTs, a doubled ';' in declarations, accessor access modifiers, bit
+ * access (x.0) and pragmas sharing a line with code. Each
  * pass is a hand-written scanner rather than a regex: compat_regex is
  * POSIX-only and has neither lookahead nor a portable \b. Every pass
  * reproduces its reference pattern's match semantics, including case
@@ -386,6 +388,45 @@ static void pass_pragma(StBuf *out, const char *s, size_t n) {
             cp_replace(&c, i, eol, "", 0);
         }
         i = line_next(n, eol);
+    }
+    cp_flush(&c, n);
+}
+
+/* Index of the '}' closing the one-line {pragma} opening at s[i], or 0 when
+ * it spans lines or carries a comment delimiter (see pass_pragma). A '}'
+ * inside quoted text does not close it. */
+static size_t inline_pragma_close(const char *s, size_t n, size_t i) {
+    bool comment = false;
+    size_t k = i + SKIP_ONE;
+    while (k < n && s[k] != '}' && s[k] != '\n') {
+        if (s[k] == '\'' || s[k] == '"') {
+            k = trivia_end(s, n, k);
+            continue;
+        }
+        comment = comment || has_comment_delim(s, k, k + PAIR_LEN > n ? n : k + PAIR_LEN);
+        k++;
+    }
+    return (k < n && s[k] == '}' && !comment) ? k : 0;
+}
+
+/* A {pragma} sharing its line with code ("x := 1, {warning 'y'}") becomes
+ * blanks of the same length. Kept: pragmas in comments or strings, one
+ * spanning lines, and one carrying a comment delimiter (see pass_pragma). */
+static void pass_inline_pragma(StBuf *out, const char *s, size_t n) {
+    StCopy c = {out, s, 0};
+    for (size_t i = 0; i < n;) {
+        if (s[i] == '{') {
+            size_t k = inline_pragma_close(s, n, i);
+            if (k) {
+                cp_blank(&c, i, k + SKIP_ONE);
+                i = k + SKIP_ONE;
+            } else {
+                i++;
+            }
+            continue;
+        }
+        size_t t = trivia_end(s, n, i);
+        i = t > i ? t : i + SKIP_ONE;
     }
     cp_flush(&c, n);
 }
@@ -1275,12 +1316,12 @@ static void pass_bit_access(StBuf *out, const char *s, size_t n) {
 
 char *cbm_st_normalize(const char *src, int len, int *out_len) {
     static const StPass PASSES[] = {
-        pass_pragma,        pass_union,      pass_struct_semi,     pass_empty_struct,
-        pass_enum_base,     pass_at_address, pass_reference_to,    pass_var_stat,
-        pass_persistent,    pass_and_then,   pass_arr_init,        pass_ctor_args,
-        pass_double_semi,   pass_array_star, pass_str_len,         pass_pou_access,
-        pass_program_as_fb, pass_modifier,   pass_accessor_access, pass_type_extends,
-        pass_bit_access,
+        pass_pragma,       pass_inline_pragma, pass_union,      pass_struct_semi,
+        pass_empty_struct, pass_enum_base,     pass_at_address, pass_reference_to,
+        pass_var_stat,     pass_persistent,    pass_and_then,   pass_arr_init,
+        pass_ctor_args,    pass_double_semi,   pass_array_star, pass_str_len,
+        pass_pou_access,   pass_program_as_fb, pass_modifier,   pass_accessor_access,
+        pass_type_extends, pass_bit_access,
     };
     StBuf cur = {0};
     tb_put(&cur, src ? src : "", (src && len > 0) ? (size_t)len : 0);

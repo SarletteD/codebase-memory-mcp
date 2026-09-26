@@ -12307,6 +12307,47 @@ TEST(st_normalize_blanks_bit_access_before_parsing) {
     PASS();
 }
 
+/* A pragma sharing its line with code ({warning ...} after a statement or an
+ * enum value) is blanked; one inside a comment or string stays. */
+TEST(st_normalize_blanks_inline_pragma_before_parsing) {
+    static const char SRC[] = "TYPE E_Mode :\n"                              /* 1 */
+                              "(\n"                                          /* 2 */
+                              "  Idle := 0, {warning 'check'}\n"             /* 3 */
+                              "  Busy := 1\n"                                /* 4 */
+                              ");\n"                                         /* 5 */
+                              "END_TYPE\n"                                   /* 6 */
+                              "FUNCTION Pick : INT\n"                        /* 7 */
+                              "VAR_INPUT\n"                                  /* 8 */
+                              "  m : E_Mode; {attribute 'hide'}\n"           /* 9 */
+                              "END_VAR\n"                                    /* 10 */
+                              "IF (m = E_Mode.Busy) {warning 'todo'} THEN\n" /* 11 */
+                              "  Pick := Fetch('{x}'); (* {y} *)\n"          /* 12 */
+                              "  Pick := 0; {warning 'see {x} here'}\n"      /* 13 */
+                              "END_IF\n"                                     /* 14 */
+                              "END_FUNCTION\n";                              /* 15 */
+    int len = 0;
+    char *out = cbm_st_normalize(SRC, (int)strlen(SRC), &len);
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ(len, (int)strlen(SRC));
+    ASSERT(strstr(out, "warning") == NULL);
+    ASSERT(strstr(out, "here") == NULL);
+    ASSERT(strstr(out, "attribute") == NULL);
+    ASSERT(strstr(out, "Fetch('{x}'); (* {y} *)") != NULL);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, out);
+
+    CBMFileResult *r = extract(SRC, CBM_LANG_ST, "t", "Pick.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *mode = st_def(r, "E_Mode");
+    const CBMDefinition *pick = st_def(r, "Pick");
+    ASSERT_NOT_NULL(mode);
+    ASSERT_NOT_NULL(pick);
+    ASSERT_EQ((int)mode->start_line, 1);
+    ASSERT_EQ((int)pick->start_line, 7);
+    cbm_free_result(r);
+    PASS();
+}
+
 /* ── ST export layout: members after END_FUNCTION_BLOCK (st_unit) ────────── */
 
 /* The export layout: body statements before END_FUNCTION_BLOCK, the members
@@ -15014,6 +15055,7 @@ SUITE(extraction) {
     RUN_TEST(st_normalize_fills_empty_struct_before_parsing);
     RUN_TEST(st_normalize_rewrites_struct_fields_and_double_semicolons_before_parsing);
     RUN_TEST(st_normalize_blanks_bit_access_before_parsing);
+    RUN_TEST(st_normalize_blanks_inline_pragma_before_parsing);
     RUN_TEST(st_unit_reorders_trailing_members_as_a_line_permutation);
     RUN_TEST(st_unit_skips_comments_strings_and_actions);
     RUN_TEST(st_trailing_members_attach_to_function_block);
