@@ -458,7 +458,7 @@ static const char *const meson_write_nodes[] = {"operatorunit", NULL};
 static const char *const gn_write_nodes[] = {"assignment_statement", NULL};
 static const char *const objectscript_binding_nodes[] = {"argument", "tag_parameter", NULL};
 static const char *const objectscript_write_nodes[] = {"set_argument", NULL};
-static const char *const st_binding_nodes[] = {"variable_declaration", NULL};
+static const char *const st_binding_nodes[] = {"variable_declaration", "structure_field", NULL};
 
 /* Parallel to lang_specs: occurrence semantics evolve without adding fields to
  * the positional CBMLangSpec initializer used by every language. */
@@ -512,7 +512,9 @@ static const CBMOccurrenceSpec occurrence_specs[CBM_LANG_COUNT] = {
      * binding_fields does not list — so without this row a declared name was
      * emitted as a usage. All VAR sections precede the body and are visible for
      * the whole POU, so parameter-like whole-scope binding is the ST semantics.
-     * The `type` field and (see is_binding_occurrence) `initial_value` stay reads. */
+     * The `type` field and (see is_binding_occurrence) `initial_value` stay reads.
+     * A STRUCT member is a structure_field: its `name` is a declaration too, while
+     * its `type` and `default` stay reads. */
     [CBM_LANG_ST] = {st_binding_nodes, NULL, CBM_OCCURRENCE_STANDARD, false},
 };
 

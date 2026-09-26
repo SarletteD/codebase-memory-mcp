@@ -12348,6 +12348,70 @@ TEST(st_normalize_blanks_inline_pragma_before_parsing) {
     PASS();
 }
 
+/* A struct field's name is a declaration, not a read: a field Speed must not
+ * point at another Speed, and the empty-STRUCT placeholder leaves no usage.
+ * The field's type and initializer stay reads. */
+TEST(st_struct_field_names_bind) {
+    CBMFileResult *r = extract("TYPE T_Drive :\n"
+                               "STRUCT\n"
+                               "  Speed : INT;\n"
+                               "  Axis : T_Axis;\n"
+                               "  Gain : INT := BaseGain;\n"
+                               "END_STRUCT\n"
+                               "END_TYPE\n"
+                               "TYPE T_Empty :\n"
+                               "STRUCT\n"
+                               "END_STRUCT\n"
+                               "END_TYPE\n",
+                               CBM_LANG_ST, "t", "Drive.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT_EQ(st_usage_count(r, "Speed"), 0);
+    ASSERT_EQ(st_usage_count(r, "Gain"), 0);
+    ASSERT_EQ(st_usage_count(r, "_"), 0);
+    ASSERT_EQ(st_usage_count(r, "T_Axis"), 1);
+    ASSERT_EQ(st_usage_count(r, "BaseGain"), 1);
+    cbm_free_result(r);
+
+    /* the field binds only its own declaration: a later read of a global
+     * Speed in the same file stays a usage */
+    r = extract("TYPE T_Drive :\n"
+                "STRUCT\n"
+                "  Speed : INT;\n"
+                "END_STRUCT\n"
+                "END_TYPE\n"
+                "FUNCTION Pace : INT\n"
+                "Pace := Speed;\n"
+                "END_FUNCTION\n",
+                CBM_LANG_ST, "t", "Pace.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT_EQ(st_usage_count(r, "Speed"), 1);
+    for (int i = 0; i < r->usages.count; i++) {
+        if (r->usages.items[i].ref_name && strcmp(r->usages.items[i].ref_name, "Speed") == 0)
+            ASSERT_FALSE(r->usages.items[i].semantic_reference_blocked);
+    }
+    cbm_free_result(r);
+
+    /* a field named like its type ("Mode : Mode;") keeps the type as an
+     * unshadowed read: the field name enters no lexical scope */
+    r = extract("TYPE T_Cmd :\n"
+                "STRUCT\n"
+                "  Mode : Mode;\n"
+                "END_STRUCT\n"
+                "END_TYPE\n",
+                CBM_LANG_ST, "t", "Cmd.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT_EQ(st_usage_count(r, "Mode"), 1);
+    for (int i = 0; i < r->usages.count; i++) {
+        if (r->usages.items[i].ref_name && strcmp(r->usages.items[i].ref_name, "Mode") == 0)
+            ASSERT_FALSE(r->usages.items[i].semantic_reference_blocked);
+    }
+    cbm_free_result(r);
+    PASS();
+}
+
 /* ── ST export layout: members after END_FUNCTION_BLOCK (st_unit) ────────── */
 
 /* The export layout: body statements before END_FUNCTION_BLOCK, the members
@@ -15056,6 +15120,7 @@ SUITE(extraction) {
     RUN_TEST(st_normalize_rewrites_struct_fields_and_double_semicolons_before_parsing);
     RUN_TEST(st_normalize_blanks_bit_access_before_parsing);
     RUN_TEST(st_normalize_blanks_inline_pragma_before_parsing);
+    RUN_TEST(st_struct_field_names_bind);
     RUN_TEST(st_unit_reorders_trailing_members_as_a_line_permutation);
     RUN_TEST(st_unit_skips_comments_strings_and_actions);
     RUN_TEST(st_trailing_members_attach_to_function_block);
