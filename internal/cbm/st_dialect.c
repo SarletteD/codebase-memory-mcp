@@ -242,6 +242,12 @@ static size_t find_seq(const char *s, size_t n, size_t from, const char *seq) {
     return n;
 }
 
+/* Position after the first `close` at or after from, or n. */
+static size_t skip_past(const char *s, size_t n, size_t from, const char *close) {
+    size_t j = find_seq(s, n, from, close);
+    return j < n ? j + strlen(close) : n;
+}
+
 /* End of the '...' or "..." literal opening at s[i] ($ escapes the next
  * byte); stops at a newline so a stray quote cannot swallow the file. */
 static size_t string_end(const char *s, size_t n, size_t i) {
@@ -257,6 +263,39 @@ static size_t string_end(const char *s, size_t n, size_t i) {
         }
     }
     return j;
+}
+
+/* End of the comment, string or {pragma} that starts at s[i], or i when none
+ * starts there. Tokenizes like st_unit: (* *) does not nest, a string stops at
+ * a newline so a stray quote cannot swallow the rest of the file. */
+static size_t trivia_end(const char *s, size_t n, size_t i) {
+    char c = s[i];
+    char d = at_or_nul(s, n, i + SKIP_ONE);
+    const char *close = block_closer(c, d);
+    if (close) {
+        return skip_past(s, n, i + SKIP_ONE, close);
+    }
+    if (c == '/' && d == '/') {
+        return line_end(s, n, i);
+    }
+    if (c == '\'' || c == '"') {
+        return string_end(s, n, i);
+    }
+    return i;
+}
+
+/* Skip whitespace (newlines included), comments and pragmas. */
+static size_t skip_space_comments(const char *s, size_t n, size_t i) {
+    for (;;) {
+        while (i < n && is_space(s[i])) {
+            i++;
+        }
+        size_t t = (i < n && s[i] != '\'' && s[i] != '"') ? trivia_end(s, n, i) : i;
+        if (t == i) {
+            return i;
+        }
+        i = t;
+    }
 }
 
 /* Every section keyword a declaration block opens with (VAR_STAT and
@@ -373,6 +412,11 @@ static void pass_struct_semi(StBuf *out, const char *s, size_t n) {
     static const char KW_SEMI[] = "END_STRUCT;";
     StCopy c = {out, s, 0};
     for (size_t i = 0; i < n;) {
+        size_t t = trivia_end(s, n, i);
+        if (t > i) {
+            i = t;
+            continue;
+        }
         if (up(s[i]) == 'E' && word_at(s, n, i, KW)) {
             size_t j = i + ST_LIT_LEN(KW);
             while (j < n && is_space(s[j])) {
@@ -382,6 +426,33 @@ static void pass_struct_semi(StBuf *out, const char *s, size_t n) {
                 cp_replace(&c, i, i + ST_LIT_LEN(KW), KW_SEMI, ST_LIT_LEN(KW_SEMI));
             }
             i += ST_LIT_LEN(KW);
+            continue;
+        }
+        i++;
+    }
+    cp_flush(&c, n);
+}
+
+/* "STRUCT END_STRUCT" -> "STRUCT _ : BOOL; END_STRUCT": the grammar needs at
+ * least one field, exports carry empty ones (a derived DUT that adds no
+ * field). Struct fields become no graph node, so the placeholder stays
+ * invisible while the type itself is kept. */
+static void pass_empty_struct(StBuf *out, const char *s, size_t n) {
+    static const char FIELD[] = " _ : BOOL;";
+    StCopy c = {out, s, 0};
+    for (size_t i = 0; i < n;) {
+        size_t t = trivia_end(s, n, i);
+        if (t > i) {
+            i = t;
+            continue;
+        }
+        if (up(s[i]) == 'S' && word_at(s, n, i, "STRUCT")) {
+            size_t e = i + ST_LIT_LEN("STRUCT");
+            size_t j = skip_space_comments(s, n, e);
+            if (ci_at(s, n, j, "END_STRUCT") && ends_word(s, n, j + ST_LIT_LEN("END_STRUCT"))) {
+                cp_replace(&c, e, e, FIELD, ST_LIT_LEN(FIELD));
+            }
+            i = e;
             continue;
         }
         i++;
@@ -1051,10 +1122,11 @@ static void pass_type_extends(StBuf *out, const char *s, size_t n) {
 
 char *cbm_st_normalize(const char *src, int len, int *out_len) {
     static const StPass PASSES[] = {
-        pass_pragma,       pass_union,        pass_struct_semi, pass_enum_base,  pass_at_address,
-        pass_reference_to, pass_var_stat,     pass_persistent,  pass_and_then,   pass_arr_init,
-        pass_ctor_args,    pass_array_star,   pass_str_len,     pass_pou_access, pass_program_as_fb,
-        pass_modifier,     pass_type_extends,
+        pass_pragma,     pass_union,        pass_struct_semi,  pass_empty_struct,
+        pass_enum_base,  pass_at_address,   pass_reference_to, pass_var_stat,
+        pass_persistent, pass_and_then,     pass_arr_init,     pass_ctor_args,
+        pass_array_star, pass_str_len,      pass_pou_access,   pass_program_as_fb,
+        pass_modifier,   pass_type_extends,
     };
     StBuf cur = {0};
     tb_put(&cur, src ? src : "", (src && len > 0) ? (size_t)len : 0);

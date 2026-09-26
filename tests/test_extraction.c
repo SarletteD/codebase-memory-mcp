@@ -12156,6 +12156,48 @@ TEST(st_program_becomes_function_block_only_for_its_own_members) {
     PASS();
 }
 
+/* A STRUCT without fields (a derived DUT that adds none) gets one placeholder
+ * field, because the grammar requires at least one; a STRUCT spelled inside a
+ * comment or string, and a STRUCT that has fields, stay as they are. */
+TEST(st_normalize_fills_empty_struct_before_parsing) {
+    static const char SRC[] = "TYPE T_Empty :\n"                   /* 1 */
+                              "STRUCT\n"                           /* 2 */
+                              "  (* no fields yet *)\n"            /* 3 */
+                              "END_STRUCT\n"                       /* 4 */
+                              "END_TYPE\n"                         /* 5 */
+                              "TYPE T_Derived EXTENDS T_Base:\n"   /* 6 */
+                              "STRUCT END_STRUCT;\n"               /* 7 */
+                              "END_TYPE\n"                         /* 8 */
+                              "TYPE T_Full :\n"                    /* 9 */
+                              "struct (* 'STRUCT END_STRUCT' *)\n" /* 10 */
+                              "  Speed : INT;\n"                   /* 11 */
+                              "end_struct\n"                       /* 12 */
+                              "END_TYPE\n";                        /* 13 */
+    int len = 0;
+    char *out = cbm_st_normalize(SRC, (int)strlen(SRC), &len);
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ(st_newlines(out), st_newlines(SRC));
+    ASSERT(strstr(out, "(* 'STRUCT END_STRUCT' *)") != NULL);
+    ASSERT(strstr(out, "struct (*") != NULL);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, out);
+
+    CBMFileResult *r = extract(SRC, CBM_LANG_ST, "t", "Empty.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *empty = st_def(r, "T_Empty");
+    const CBMDefinition *derived = st_def(r, "T_Derived");
+    const CBMDefinition *full = st_def(r, "T_Full");
+    ASSERT_NOT_NULL(empty);
+    ASSERT_NOT_NULL(derived);
+    ASSERT_NOT_NULL(full);
+    ASSERT_EQ((int)empty->start_line, 1);
+    ASSERT_EQ((int)derived->start_line, 6);
+    ASSERT_EQ((int)full->start_line, 9);
+    ASSERT_NULL(st_def(r, "_"));
+    cbm_free_result(r);
+    PASS();
+}
+
 /* ── ST export layout: members after END_FUNCTION_BLOCK (st_unit) ────────── */
 
 /* The export layout: body statements before END_FUNCTION_BLOCK, the members
@@ -14802,6 +14844,7 @@ SUITE(extraction) {
     RUN_TEST(st_normalize_rewrites_every_var_section);
     RUN_TEST(st_lowercase_end_program_becomes_function_block);
     RUN_TEST(st_program_becomes_function_block_only_for_its_own_members);
+    RUN_TEST(st_normalize_fills_empty_struct_before_parsing);
     RUN_TEST(st_unit_reorders_trailing_members_as_a_line_permutation);
     RUN_TEST(st_unit_skips_comments_strings_and_actions);
     RUN_TEST(st_trailing_members_attach_to_function_block);
