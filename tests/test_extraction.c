@@ -12250,6 +12250,63 @@ TEST(st_normalize_rewrites_struct_fields_and_double_semicolons_before_parsing) {
     PASS();
 }
 
+/* Bit access on an integer ("x.0", "a[1].3", "s.Flags.7") is not in the
+ * grammar. The ".N" suffix is blanked, so the variable stays a read or a
+ * write of itself; real and typed literals, direct addresses, ranges,
+ * comments and strings keep their dots. */
+TEST(st_normalize_blanks_bit_access_before_parsing) {
+    static const char SRC[] = "FUNCTION PackBits : BYTE\n"                  /* 1 */
+                              "VAR_INPUT\n"                                 /* 2 */
+                              "  Flags : WORD;\n"                           /* 3 */
+                              "  Parts : ARRAY [0..1] OF BYTE;\n"           /* 4 */
+                              "END_VAR\n"                                   /* 5 */
+                              "VAR\n"                                       /* 6 */
+                              "  Ratio : REAL := 1.5;\n"                    /* 7 */
+                              "END_VAR\n"                                   /* 8 */
+                              "PackBits.0 := Flags.1;\n"                    /* 9 */
+                              "PackBits.7 := Parts[1].00; (* keep x.0 *)\n" /* 10 */
+                              "IF (Flags.15) THEN\n"                        /* 11 */
+                              "  Ratio := Ratio * 2.0 + REAL#0.5;\n"        /* 12 */
+                              "  Emit(Flags.3, 'v.1');\n"                   /* 13 */
+                              "END_IF\n"                                    /* 14 */
+                              "END_FUNCTION\n";                             /* 15 */
+    int len = 0;
+    char *out = cbm_st_normalize(SRC, (int)strlen(SRC), &len);
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ(len, (int)strlen(SRC));
+    ASSERT(strstr(out, "PackBits   := Flags  ;") != NULL);
+    ASSERT(strstr(out, "PackBits   := Parts[1]   ; (* keep x.0 *)") != NULL);
+    ASSERT(strstr(out, "IF (Flags   )") != NULL);
+    ASSERT(strstr(out, "Emit(Flags  , 'v.1');") != NULL);
+    ASSERT(strstr(out, "1.5;") != NULL);
+    ASSERT(strstr(out, "2.0 + REAL#0.5") != NULL);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, out);
+
+    static const char EDGE[] = "d := T#1.5s; h := 16#FF.0; r := x.0a; s := a[0..7]; q := %QX2.3;\n"
+                               "t := TOD#12:00:00.5; u := x.0.1; w := T#1d2h3.5m;";
+    out = cbm_st_normalize(EDGE, (int)strlen(EDGE), &len);
+    ASSERT_NOT_NULL(out);
+    ASSERT_STR_EQ(out, EDGE);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, out);
+
+    CBMFileResult *r = extract(SRC, CBM_LANG_ST, "t", "PackBits.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *f = st_def(r, "PackBits");
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ((int)f->start_line, 1);
+    ASSERT_EQ(st_usage_count(r, "Flags"), 3);
+    ASSERT_EQ(st_usage_count(r, "Parts"), 1);
+    int emit_line = 0;
+    for (int i = 0; i < r->calls.count; i++) {
+        if (r->calls.items[i].callee_name && strcmp(r->calls.items[i].callee_name, "Emit") == 0)
+            emit_line = (int)r->calls.items[i].start_line;
+    }
+    ASSERT_EQ(emit_line, 13);
+    cbm_free_result(r);
+    PASS();
+}
+
 /* ── ST export layout: members after END_FUNCTION_BLOCK (st_unit) ────────── */
 
 /* The export layout: body statements before END_FUNCTION_BLOCK, the members
@@ -14898,6 +14955,7 @@ SUITE(extraction) {
     RUN_TEST(st_program_becomes_function_block_only_for_its_own_members);
     RUN_TEST(st_normalize_fills_empty_struct_before_parsing);
     RUN_TEST(st_normalize_rewrites_struct_fields_and_double_semicolons_before_parsing);
+    RUN_TEST(st_normalize_blanks_bit_access_before_parsing);
     RUN_TEST(st_unit_reorders_trailing_members_as_a_line_permutation);
     RUN_TEST(st_unit_skips_comments_strings_and_actions);
     RUN_TEST(st_trailing_members_attach_to_function_block);

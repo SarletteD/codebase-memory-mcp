@@ -332,6 +332,15 @@ static void cp_replace(StCopy *c, size_t start, size_t end, const char *rep, siz
     c->from = end;
 }
 
+/* Replace s[start, end) with as many blanks (same length, same line). */
+static void cp_blank(StCopy *c, size_t start, size_t end) {
+    cp_flush(c, start);
+    for (size_t q = start; q < end; q++) {
+        tb_putc(c->out, ' ');
+    }
+    c->from = end;
+}
+
 typedef void (*StPass)(StBuf *out, const char *s, size_t n);
 
 /* ── normalization passes ─────────────────────────────────────────────────── */
@@ -1167,12 +1176,70 @@ static void pass_type_extends(StBuf *out, const char *s, size_t n) {
     cp_flush(&c, n);
 }
 
+/* True when the '.' at s[i] follows an operand that can carry a bit index:
+ * an identifier (not a number, not the tail of a 16#FF or %IX0 literal) or a
+ * closing ']'. */
+static bool bit_access_owner(const char *s, size_t i) {
+    if (i == 0) {
+        return false;
+    }
+    char prev = s[i - SKIP_ONE];
+    if (prev == ']') {
+        return true;
+    }
+    if (!is_word(prev)) {
+        return false;
+    }
+    size_t k = i - SKIP_ONE;
+    while (k > 0 && is_word(s[k - SKIP_ONE])) {
+        k--;
+    }
+    if (is_digit(s[k])) {
+        return false;
+    }
+    return k == 0 || (s[k - SKIP_ONE] != '#' && s[k - SKIP_ONE] != '%');
+}
+
+/* End of the ".N" bit index at s[i], or 0. */
+static size_t bit_index_end(const char *s, size_t n, size_t i) {
+    if (s[i] != '.' || !is_digit(at_or_nul(s, n, i + SKIP_ONE)) || !bit_access_owner(s, i)) {
+        return 0;
+    }
+    size_t j = i + SKIP_ONE;
+    while (j < n && is_digit(s[j])) {
+        j++;
+    }
+    return (ends_word(s, n, j) && (j >= n || s[j] != '.')) ? j : 0;
+}
+
+/* Bit access "x.3" / "a[1].0" / "s.Flags.7" -> the ".N" becomes blanks: the
+ * grammar has no integer bit index, and the variable stays a read or write
+ * of itself, which is what the access means for the graph. */
+static void pass_bit_access(StBuf *out, const char *s, size_t n) {
+    StCopy c = {out, s, 0};
+    for (size_t i = 0; i < n;) {
+        size_t t = trivia_end(s, n, i);
+        if (t > i) {
+            i = t;
+            continue;
+        }
+        size_t j = bit_index_end(s, n, i);
+        if (j) {
+            cp_blank(&c, i, j);
+            i = j;
+            continue;
+        }
+        i++;
+    }
+    cp_flush(&c, n);
+}
+
 char *cbm_st_normalize(const char *src, int len, int *out_len) {
     static const StPass PASSES[] = {
         pass_pragma,     pass_union,         pass_struct_semi, pass_empty_struct, pass_enum_base,
         pass_at_address, pass_reference_to,  pass_var_stat,    pass_persistent,   pass_and_then,
         pass_arr_init,   pass_ctor_args,     pass_double_semi, pass_array_star,   pass_str_len,
-        pass_pou_access, pass_program_as_fb, pass_modifier,    pass_type_extends,
+        pass_pou_access, pass_program_as_fb, pass_modifier,    pass_type_extends, pass_bit_access,
     };
     StBuf cur = {0};
     tb_put(&cur, src ? src : "", (src && len > 0) ? (size_t)len : 0);
