@@ -15,9 +15,10 @@
  * REFERENCE TO, AND_THEN/OR_ELSE, AT %I*, an enum base) do not skip comments
  * or strings: a rewrite there changes no definition, call or usage.
  *
- * Declaration-level passes (array initializers, constructor arguments) run
- * only inside VAR ... END_VAR regions, where statements cannot live: applied
- * to the whole file they turned invalid statement code into a clean parse.
+ * Declaration-level passes (array initializers, constructor arguments, a
+ * doubled ';') run only inside VAR ... END_VAR and STRUCT ... END_STRUCT
+ * regions, where statements cannot live: applied to the whole file they
+ * turned invalid statement code into a clean parse.
  *
  * Every pass preserves the number and order of newlines — deleted text gives
  * back the newlines it contained — so line N of the normalized source is
@@ -601,7 +602,7 @@ static void pass_and_then(StBuf *out, const char *s, size_t n) {
     cp_flush(&c, n);
 }
 
-/* ── declaration regions: VAR ... END_VAR ───────────────────────────────────── */
+/* ── declaration regions: VAR ... END_VAR and STRUCT ... END_STRUCT ───────── */
 
 /* Terminator of the block comment or pragma opening at s[p] (strings and //
  * comments excluded), with its opener length in *skip, or NULL. */
@@ -657,16 +658,35 @@ static size_t line_opens_var(const char *s, size_t eol, size_t i) {
     return span_in(s + j, k - j, VAR_SECTIONS) ? k : 0;
 }
 
+/* End of STRUCT as the line's first word or in the code of a "TYPE X :"
+ * header line, or 0. */
+static size_t line_opens_struct(const char *s, size_t eol, size_t i) {
+    size_t j = skip_blanks(s, eol, i);
+    if (ci_at(s, eol, j, "STRUCT") && ends_word(s, eol, j + ST_LIT_LEN("STRUCT"))) {
+        return j + ST_LIT_LEN("STRUCT");
+    }
+    if (!ci_at(s, eol, j, "TYPE") || !ends_word(s, eol, j + ST_LIT_LEN("TYPE"))) {
+        return 0;
+    }
+    const char *open = NULL;
+    size_t k = line_find_word(s, eol, j + ST_LIT_LEN("TYPE"), &open, "STRUCT");
+    return k < eol ? k + ST_LIT_LEN("STRUCT") : 0;
+}
+
 /* Closer of the declaration region the code line s[i, eol) opens, with the
  * end of its opening keyword in *body, or NULL. */
 static const char *line_opens_region(const char *s, size_t eol, size_t i, size_t *body) {
     *body = line_opens_var(s, eol, i);
-    return *body ? "END_VAR" : NULL;
+    if (*body) {
+        return "END_VAR";
+    }
+    *body = line_opens_struct(s, eol, i);
+    return *body ? "END_STRUCT" : NULL;
 }
 
-/* Apply `fn` to every VAR ... END_VAR region (open and close lines included);
- * copy everything else unchanged. A region opens only on a line that starts
- * in code, and ends
+/* Apply `fn` to every VAR ... END_VAR and STRUCT ... END_STRUCT region (open
+ * and close lines included); copy everything else unchanged. Both hold only
+ * declarations. A region opens only on a line that starts in code, and ends
  * on the first line whose code holds its closer, wherever on that line (the
  * opening line included), so no region runs into the code after its block.
  * An unterminated region runs to the end. */
@@ -846,12 +866,39 @@ static void region_ctor_args(StBuf *out, const char *s, size_t n) {
     cp_flush(&c, n);
 }
 
+/* "x : BOOL;;" -> "x : BOOL; ": an empty declaration is an ERROR, while in a
+ * body the grammar takes ";;" as an empty statement, hence the region scope. */
+static void region_double_semi(StBuf *out, const char *s, size_t n) {
+    StCopy c = {out, s, 0};
+    for (size_t i = 0; i < n;) {
+        size_t t = trivia_end(s, n, i);
+        if (t > i) {
+            i = t;
+            continue;
+        }
+        if (s[i] == ';') {
+            size_t j = skip_blanks(s, n, i + SKIP_ONE);
+            if (j < n && s[j] == ';') {
+                cp_replace(&c, j, j + SKIP_ONE, " ", SKIP_ONE);
+                i = j; /* the blanked ';' may be followed by another */
+                continue;
+            }
+        }
+        i++;
+    }
+    cp_flush(&c, n);
+}
+
 static void pass_arr_init(StBuf *out, const char *s, size_t n) {
     in_decl_blocks(out, s, n, region_arr_init);
 }
 
 static void pass_ctor_args(StBuf *out, const char *s, size_t n) {
     in_decl_blocks(out, s, n, region_ctor_args);
+}
+
+static void pass_double_semi(StBuf *out, const char *s, size_t n) {
+    in_decl_blocks(out, s, n, region_double_semi);
 }
 
 /* ── remaining passes ─────────────────────────────────────────────────────── */
@@ -1122,11 +1169,10 @@ static void pass_type_extends(StBuf *out, const char *s, size_t n) {
 
 char *cbm_st_normalize(const char *src, int len, int *out_len) {
     static const StPass PASSES[] = {
-        pass_pragma,     pass_union,        pass_struct_semi,  pass_empty_struct,
-        pass_enum_base,  pass_at_address,   pass_reference_to, pass_var_stat,
-        pass_persistent, pass_and_then,     pass_arr_init,     pass_ctor_args,
-        pass_array_star, pass_str_len,      pass_pou_access,   pass_program_as_fb,
-        pass_modifier,   pass_type_extends,
+        pass_pragma,     pass_union,         pass_struct_semi, pass_empty_struct, pass_enum_base,
+        pass_at_address, pass_reference_to,  pass_var_stat,    pass_persistent,   pass_and_then,
+        pass_arr_init,   pass_ctor_args,     pass_double_semi, pass_array_star,   pass_str_len,
+        pass_pou_access, pass_program_as_fb, pass_modifier,    pass_type_extends,
     };
     StBuf cur = {0};
     tb_put(&cur, src ? src : "", (src && len > 0) ? (size_t)len : 0);

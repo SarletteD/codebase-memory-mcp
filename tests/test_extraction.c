@@ -11973,8 +11973,9 @@ static int st_case_call_survives(const char *src, int call_line) {
 }
 
 /* A declaration region never outlives its block: an opening line that also
- * closes it, a closer after code or a comment on its line, and a VAR inside a
- * comment must not turn the following code into a region. */
+ * closes it, a closer after code or a comment on its line, a STRUCT or VAR
+ * inside a comment, and a comment on a TYPE header must not turn the
+ * following code into a region. */
 TEST(st_declaration_region_stays_inside_its_block) {
     static const char BODY[] = "FUNCTION Run : INT\n"
                                "VAR_INPUT\n"
@@ -12018,6 +12019,15 @@ TEST(st_declaration_region_stays_inside_its_block) {
                                  "Run := a;\n"
                                  "END_FUNCTION\n",
                                  6));
+    /* STRUCT regions: a one-line TYPE, a TYPE header naming STRUCT only in a
+     * comment, and END_STRUCT after a field */
+    snprintf(src, sizeof(src), "TYPE T_Empty EXTENDS T_Base : STRUCT END_STRUCT END_TYPE\n%s",
+             BODY);
+    ASSERT(st_case_call_survives(src, 7));
+    snprintf(src, sizeof(src), "TYPE T_Alias : INT; END_TYPE (* not a STRUCT *)\n%s", BODY);
+    ASSERT(st_case_call_survives(src, 7));
+    snprintf(src, sizeof(src), "TYPE T_Flag :\nSTRUCT\n  b : BOOL; END_STRUCT\nEND_TYPE\n%s", BODY);
+    ASSERT(st_case_call_survives(src, 10));
     PASS();
 }
 
@@ -12194,6 +12204,48 @@ TEST(st_normalize_fills_empty_struct_before_parsing) {
     ASSERT_EQ((int)derived->start_line, 6);
     ASSERT_EQ((int)full->start_line, 9);
     ASSERT_NULL(st_def(r, "_"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A STRUCT body is a declaration region like VAR ... END_VAR: an array
+ * initializer and a doubled ';' are dropped there too. A ';;' in a string
+ * stays, and so does one in a body statement, where the grammar accepts it
+ * as an empty statement. */
+TEST(st_normalize_rewrites_struct_fields_and_double_semicolons_before_parsing) {
+    static const char SRC[] = "TYPE T_Params :\n"                             /* 1 */
+                              "STRUCT\n"                                      /* 2 */
+                              "  Limits : ARRAY [0..1] OF REAL := [10, 0];\n" /* 3 */
+                              "  Reset : BOOL;;\n"                            /* 4 */
+                              "  Tag : STRING := 'a;;b';\n"                   /* 5 */
+                              "END_STRUCT\n"                                  /* 6 */
+                              "END_TYPE\n"                                    /* 7 */
+                              "FUNCTION Twice : INT\n"                        /* 8 */
+                              "VAR_INPUT\n"                                   /* 9 */
+                              "  n : INT;;\n"                                 /* 10 */
+                              "END_VAR\n"                                     /* 11 */
+                              "Twice := n * 2;;\n"                            /* 12 */
+                              "END_FUNCTION\n";                               /* 13 */
+    int len = 0;
+    char *out = cbm_st_normalize(SRC, (int)strlen(SRC), &len);
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ(st_newlines(out), st_newlines(SRC));
+    ASSERT(strstr(out, ":= [") == NULL);
+    ASSERT(strstr(out, "'a;;b'") != NULL);
+    ASSERT(strstr(out, "Twice := n * 2;;") != NULL);
+    ASSERT(strstr(out, "BOOL;;") == NULL);
+    ASSERT(strstr(out, "INT;;") == NULL);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, out);
+
+    CBMFileResult *r = extract(SRC, CBM_LANG_ST, "t", "Params.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *t = st_def(r, "T_Params");
+    const CBMDefinition *f = st_def(r, "Twice");
+    ASSERT_NOT_NULL(t);
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ((int)t->start_line, 1);
+    ASSERT_EQ((int)f->start_line, 8);
     cbm_free_result(r);
     PASS();
 }
@@ -14845,6 +14897,7 @@ SUITE(extraction) {
     RUN_TEST(st_lowercase_end_program_becomes_function_block);
     RUN_TEST(st_program_becomes_function_block_only_for_its_own_members);
     RUN_TEST(st_normalize_fills_empty_struct_before_parsing);
+    RUN_TEST(st_normalize_rewrites_struct_fields_and_double_semicolons_before_parsing);
     RUN_TEST(st_unit_reorders_trailing_members_as_a_line_permutation);
     RUN_TEST(st_unit_skips_comments_strings_and_actions);
     RUN_TEST(st_trailing_members_attach_to_function_block);
