@@ -17,8 +17,10 @@
 #include "result_spill.h"
 #include "pipeline/pass_lsp_cross.h"
 #include "iris_export_xml.h"
-#include "helpers.h"    /* cbm_count_branching (walker stack cap) */
-#include "lang_specs.h" /* cbm_lang_spec, cbm_ts_language */
+#include "helpers.h"                    /* cbm_count_branching (walker stack cap) */
+#include "lang_specs.h"                 /* cbm_lang_spec, cbm_ts_language */
+#include "st_dialect.h"                 /* cbm_st_normalize */
+#include "../src/foundation/mem_core.h" /* cbm_free, CBM_MEM_CLASS_EXTRACT */
 
 /* Deep-nesting probes: extraction on a worker-sized stack, crash-isolated. */
 #include "pipeline/worker_pool.h"            /* CBM_WORKER_STACK_SIZE */
@@ -11771,6 +11773,388 @@ TEST(st_extends_and_implements_collect_every_base) {
     PASS();
 }
 
+/* ── ST vendor-dialect normalization (cbm_st_normalize) ──────────────────── */
+
+/* Count of '\n' in s. */
+static int st_newlines(const char *s) {
+    int n = 0;
+    for (; *s; s++)
+        n += *s == '\n';
+    return n;
+}
+
+/* The normalization keeps every newline (line numbers depend on it), drops a
+ * pragma line but never one carrying a comment delimiter, and rewrites
+ * declarations only inside VAR ... END_VAR: the same "Name: Call(x);" shape as
+ * a constructor argument must survive as a CASE arm. */
+TEST(st_normalize_preserves_lines_and_scopes_declaration_rewrites) {
+    static const char SRC[] = "{attribute 'x'}\n"
+                              "{*) live (*}\n"
+                              "VAR\n"
+                              "  fb : FB_T(a := 1,\n"
+                              "            b := (2));\n"
+                              "  arr : ARRAY[0..1] OF INT := [\n"
+                              "    1, 2];\n"
+                              "END_VAR\n"
+                              "CASE x OF\n"
+                              "NamedValue: Foo(x);\n"
+                              "END_CASE\n";
+    int len = 0;
+    char *out = cbm_st_normalize(SRC, (int)strlen(SRC), &len);
+    ASSERT_NOT_NULL(out);
+    int nl_in = 0;
+    int nl_out = 0;
+    for (const char *p = SRC; *p; p++)
+        nl_in += *p == '\n';
+    for (const char *p = out; *p; p++)
+        nl_out += *p == '\n';
+    ASSERT_EQ(nl_out, nl_in);
+    ASSERT_EQ(len, (int)strlen(out));
+    ASSERT(strstr(out, "attribute") == NULL);
+    ASSERT(strstr(out, "{*) live (*}") != NULL);
+    ASSERT(strstr(out, "fb : FB_T;") != NULL);
+    ASSERT(strstr(out, ":= [") == NULL);
+    ASSERT(strstr(out, "NamedValue: Foo(x);") != NULL);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, out);
+    PASS();
+}
+
+/* A pragma line is blanked (not removed, so the enum body below keeps its
+ * line) and an enum's vendor base type ") USINT;" is stripped to ");" so the
+ * grammar-native enumerated type is what it actually parses. */
+TEST(st_normalize_strips_pragma_and_enum_base_before_parsing) {
+    CBMFileResult *r = extract("{attribute 'qualified_only'}\n" /* 1 */
+                               "TYPE E_State :\n"               /* 2 */
+                               "(\n"                            /* 3 */
+                               "\tIdle := 0,\n"                 /* 4 */
+                               "\tRunning\n"                    /* 5 */
+                               ") USINT;\n"                     /* 6 */
+                               "END_TYPE\n",                    /* 7 */
+                               CBM_LANG_ST, "t", "State.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *d = st_def(r, "E_State");
+    ASSERT_NOT_NULL(d);
+    ASSERT_EQ((int)d->start_line, 2);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* REFERENCE TO (anywhere, not just declarations) becomes POINTER TO, and an
+ * access modifier directly on a POU keyword (FUNCTION_BLOCK PUBLIC X) moves
+ * out of the grammar's way; a METHOD's own access modifier is already
+ * grammar-native and must keep parsing alongside it. */
+TEST(st_normalize_rewrites_reference_to_and_pou_access_before_parsing) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK PUBLIC FB_Motor\n" /* 1 */
+                               "VAR\n"                            /* 2 */
+                               "\tAxis : REFERENCE TO INT;\n"     /* 3 */
+                               "END_VAR\n"                        /* 4 */
+                               "METHOD INTERNAL Reset : BOOL\n"   /* 5 */
+                               "Reset := TRUE;\n"                 /* 6 */
+                               "END_METHOD\n"                     /* 7 */
+                               "END_FUNCTION_BLOCK\n",            /* 8 */
+                               CBM_LANG_ST, "t", "Motor.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *fb = st_def(r, "FB_Motor");
+    const CBMDefinition *m = st_def(r, "Reset");
+    ASSERT_NOT_NULL(fb);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ((int)fb->start_line, 1);
+    ASSERT_EQ((int)m->start_line, 5);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* An unresolved hardware binding (AT %I*) is dropped: the grammar only knows
+ * complete direct addresses such as %IX0.0, and the address changes nothing
+ * the graph cares about. */
+TEST(st_normalize_strips_hardware_binding_before_parsing) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_IO\n"     /* 1 */
+                               "VAR\n"                      /* 2 */
+                               "\tbSensor AT %I* : BOOL;\n" /* 3 */
+                               "END_VAR\n"                  /* 4 */
+                               "END_FUNCTION_BLOCK\n",      /* 5 */
+                               CBM_LANG_ST, "t", "Io.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *fb = st_def(r, "FB_IO");
+    ASSERT_NOT_NULL(fb);
+    ASSERT_EQ((int)fb->start_line, 1);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A PERSISTENT VAR section keeps only its section keyword: the retention
+ * qualifier changes no program structure. */
+TEST(st_normalize_strips_persistent_before_parsing) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_Keep\n" /* 1 */
+                               "VAR PERSISTENT\n"         /* 2 */
+                               "\tnCount : INT;\n"        /* 3 */
+                               "END_VAR\n"                /* 4 */
+                               "END_FUNCTION_BLOCK\n",    /* 5 */
+                               CBM_LANG_ST, "t", "Keep.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *fb = st_def(r, "FB_Keep");
+    ASSERT_NOT_NULL(fb);
+    ASSERT_EQ((int)fb->start_line, 1);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A dynamic ARRAY[*] parameter, an array initializer and a constructor
+ * argument list are all stripped inside VAR ... END_VAR, a sized STRING[n]
+ * loses its length, and AND_THEN in the body becomes AND — the declaration
+ * and short-circuit rewrites the grammar needs together in one real-world FB. */
+TEST(st_normalize_rewrites_declaration_initializers_and_and_then_before_parsing) {
+    CBMFileResult *r = extract("FUNCTION_BLOCK FB_Buf\n"                   /* 1 */
+                               "VAR\n"                                     /* 2 */
+                               "\taBuf : ARRAY[*] OF INT;\n"               /* 3 */
+                               "\taVals : ARRAY[0..1] OF INT := [1, 2];\n" /* 4 */
+                               "\tfbTimer : TON(PT := T#1s);\n"            /* 5 */
+                               "\tsName : STRING[80];\n"                   /* 6 */
+                               "END_VAR\n"                                 /* 7 */
+                               "METHOD Ready : BOOL\n"                     /* 8 */
+                               "Ready := TRUE AND_THEN aVals[0] = 1;\n"    /* 9 */
+                               "END_METHOD\n"                              /* 10 */
+                               "END_FUNCTION_BLOCK\n",                     /* 11 */
+                               CBM_LANG_ST, "t", "Buf.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *fb = st_def(r, "FB_Buf");
+    const CBMDefinition *m = st_def(r, "Ready");
+    ASSERT_NOT_NULL(fb);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ((int)fb->start_line, 1);
+    ASSERT_EQ((int)m->start_line, 8);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* "TYPE T_X EXTENDS T_Base :" -> "TYPE T_X :": the grammar's type_definition
+ * has no EXTENDS clause of its own. */
+TEST(st_normalize_strips_type_extends_before_parsing) {
+    CBMFileResult *r = extract("TYPE T_Config EXTENDS T_Base :\n" /* 1 */
+                               "STRUCT\n"                         /* 2 */
+                               "\tName : STRING[80];\n"           /* 3 */
+                               "END_STRUCT\n"                     /* 4 */
+                               "END_TYPE\n",                      /* 5 */
+                               CBM_LANG_ST, "t", "Config.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *t = st_def(r, "T_Config");
+    ASSERT_NOT_NULL(t);
+    ASSERT_EQ((int)t->start_line, 1);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* The body line "cIdle : Start(a);" has the shape of a declaration with
+ * constructor arguments; it must keep its call arguments whatever precedes
+ * it. Returns 1 when the normalized text and the extraction keep the call. */
+static int st_case_call_survives(const char *src, int call_line) {
+    int len = 0;
+    char *out = cbm_st_normalize(src, (int)strlen(src), &len);
+    int kept = out && strstr(out, "cIdle : Start(a);") != NULL;
+    cbm_free(CBM_MEM_CLASS_EXTRACT, out);
+    CBMFileResult *r = extract(src, CBM_LANG_ST, "t", "Run.st");
+    if (!r)
+        return 0;
+    int line = 0;
+    for (int i = 0; i < r->calls.count; i++) {
+        if (r->calls.items[i].callee_name && strcmp(r->calls.items[i].callee_name, "Start") == 0)
+            line = (int)r->calls.items[i].start_line;
+    }
+    int used = st_usage_count(r, "a") == 3;
+    cbm_free_result(r);
+    return kept && used && line == call_line;
+}
+
+/* A declaration region never outlives its block: an opening line that also
+ * closes it, a closer after code or a comment on its line, and a VAR inside a
+ * comment must not turn the following code into a region. */
+TEST(st_declaration_region_stays_inside_its_block) {
+    static const char BODY[] = "FUNCTION Run : INT\n"
+                               "VAR_INPUT\n"
+                               "  a : INT;\n"
+                               "END_VAR\n"
+                               "CASE a OF\n"
+                               "cIdle : Start(a);\n"
+                               "END_CASE\n"
+                               "Run := a;\n"
+                               "END_FUNCTION\n";
+    char src[512];
+    snprintf(src, sizeof(src), "(* notes\nSTRUCT and VAR only in a comment\n*)\n%s", BODY);
+    ASSERT(st_case_call_survives(src, 9));
+    ASSERT(st_case_call_survives("FUNCTION Run : INT\n"
+                                 "VAR_INPUT a : INT; END_VAR\n"
+                                 "(*\n"
+                                 "VAR\n"
+                                 "*)\n"
+                                 "CASE a OF\n"
+                                 "cIdle : Start(a);\n"
+                                 "END_CASE\n"
+                                 "Run := a;\n"
+                                 "END_FUNCTION\n",
+                                 7));
+    ASSERT(st_case_call_survives("FUNCTION Run : INT\n"
+                                 "VAR_INPUT\n"
+                                 "  a : INT; END_VAR\n"
+                                 "CASE a OF\n"
+                                 "cIdle : Start(a);\n"
+                                 "END_CASE\n"
+                                 "Run := a;\n"
+                                 "END_FUNCTION\n",
+                                 5));
+    ASSERT(st_case_call_survives("FUNCTION Run : INT\n"
+                                 "VAR_INPUT\n"
+                                 "  a : INT; (* the input\n"
+                                 "  comment *) END_VAR\n"
+                                 "CASE a OF\n"
+                                 "cIdle : Start(a);\n"
+                                 "END_CASE\n"
+                                 "Run := a;\n"
+                                 "END_FUNCTION\n",
+                                 6));
+    PASS();
+}
+
+/* Every VAR section is a declaration region: an array initializer and a
+ * constructor argument list inside a METHOD's VAR_TEMP are rewritten like
+ * inside VAR, and so are the rarer VAR_EXTERNAL, VAR_CONFIG and VAR_ACCESS. */
+TEST(st_normalize_rewrites_every_var_section) {
+    static const char SRC[] = "FUNCTION_BLOCK FB_Temp\n"                /* 1 */
+                              "VAR\n"                                   /* 2 */
+                              "  n : INT;\n"                            /* 3 */
+                              "END_VAR\n"                               /* 4 */
+                              "METHOD Fill : BOOL\n"                    /* 5 */
+                              "VAR_TEMP\n"                              /* 6 */
+                              "  arr : ARRAY[0..1] OF INT := [1, 2];\n" /* 7 */
+                              "  t : TON(PT := T#1s);\n"                /* 8 */
+                              "END_VAR\n"                               /* 9 */
+                              "Fill := arr[0] = n;\n"                   /* 10 */
+                              "END_METHOD\n"                            /* 11 */
+                              "END_FUNCTION_BLOCK\n";                   /* 12 */
+    int len = 0;
+    char *out = cbm_st_normalize(SRC, (int)strlen(SRC), &len);
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ(st_newlines(out), st_newlines(SRC));
+    ASSERT(strstr(out, ":= [") == NULL);
+    ASSERT(strstr(out, "t : TON;") != NULL);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, out);
+
+    static const char RARE[] = "VAR_EXTERNAL\n  e : ARRAY[0..1] OF INT := [0, 0];\nEND_VAR\n"
+                               "VAR_CONFIG\n  c : ARRAY[0..1] OF INT := [0, 0];\nEND_VAR\n"
+                               "VAR_ACCESS\n  a : ARRAY[0..1] OF INT := [0, 0];\nEND_VAR\n";
+    out = cbm_st_normalize(RARE, (int)strlen(RARE), &len);
+    ASSERT_NOT_NULL(out);
+    ASSERT(strstr(out, ":= [") == NULL);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, out);
+
+    CBMFileResult *r = extract(SRC, CBM_LANG_ST, "t", "Temp.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *fill = st_def(r, "Fill");
+    ASSERT_NOT_NULL(fill);
+    ASSERT_EQ((int)fill->start_line, 5);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A PROGRAM that owns members becomes a FUNCTION_BLOCK whatever the case of
+ * its END_PROGRAM. */
+TEST(st_lowercase_end_program_becomes_function_block) {
+    CBMFileResult *r = extract("program P_Main\n"
+                               "var\n"
+                               "  x : INT;\n"
+                               "end_var\n"
+                               "method Tick : BOOL\n"
+                               "Tick := TRUE;\n"
+                               "end_method\n"
+                               "x := 1;\n"
+                               "end_program\n",
+                               CBM_LANG_ST, "t", "Main.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *tick = st_def(r, "Tick");
+    const CBMDefinition *prog = st_def(r, "P_Main");
+    ASSERT_NOT_NULL(tick);
+    ASSERT_NOT_NULL(prog);
+    ASSERT_NOT_NULL(tick->parent_class);
+    ASSERT_STR_EQ(tick->parent_class, prog->qualified_name);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* Occurrences of `needle` in `s`. */
+static int st_count(const char *s, const char *needle) {
+    int n = 0;
+    for (const char *p = strstr(s, needle); p; p = strstr(p + 1, needle))
+        n++;
+    return n;
+}
+
+/* A PROGRAM turns into a FUNCTION_BLOCK only for a METHOD or PROPERTY of its
+ * own, written in code: one in a comment or one owned by a FUNCTION_BLOCK
+ * leaves it a PROGRAM, and every PROGRAM keeps a terminator that matches its
+ * header. */
+TEST(st_program_becomes_function_block_only_for_its_own_members) {
+    static const char SRC[] = "PROGRAM P_Plain\n"         /* 1 */
+                              "VAR\n"                     /* 2 */
+                              "  x : INT;\n"              /* 3 */
+                              "END_VAR\n"                 /* 4 */
+                              "(*\n"                      /* 5 */
+                              "METHOD Old : BOOL\n"       /* 6 */
+                              "*)\n"                      /* 7 */
+                              "x := 1;\n"                 /* 8 */
+                              "END_PROGRAM\n"             /* 9 */
+                              "PROGRAM P_Owner\n"         /* 10 */
+                              "VAR\n"                     /* 11 */
+                              "  y : INT;\n"              /* 12 */
+                              "END_VAR\n"                 /* 13 */
+                              "METHOD Tick : BOOL\n"      /* 14 */
+                              "Tick := TRUE;\n"           /* 15 */
+                              "END_METHOD\n"              /* 16 */
+                              "y := 2;\n"                 /* 17 */
+                              "END_PROGRAM\n"             /* 18 */
+                              "FUNCTION_BLOCK FB_Other\n" /* 19 */
+                              "METHOD Run : BOOL\n"       /* 20 */
+                              "Run := TRUE;\n"            /* 21 */
+                              "END_METHOD\n"              /* 22 */
+                              "END_FUNCTION_BLOCK\n"      /* 23 */
+                              "PROGRAM P_Last\n"          /* 24 */
+                              "VAR\n"                     /* 25 */
+                              "  z : INT;\n"              /* 26 */
+                              "END_VAR\n"                 /* 27 */
+                              "z := 3;\n"                 /* 28 */
+                              "END_PROGRAM\n";            /* 29 */
+    int len = 0;
+    char *out = cbm_st_normalize(SRC, (int)strlen(SRC), &len);
+    ASSERT_NOT_NULL(out);
+    ASSERT(strstr(out, "PROGRAM P_Plain\n") != NULL);
+    ASSERT(strstr(out, "FUNCTION_BLOCK P_Owner\n") != NULL);
+    ASSERT(strstr(out, "PROGRAM P_Last\n") != NULL);
+    ASSERT_EQ(st_count(out, "END_PROGRAM"), 2);
+    ASSERT_EQ(st_count(out, "END_FUNCTION_BLOCK"), 2);
+    cbm_free(CBM_MEM_CLASS_EXTRACT, out);
+
+    CBMFileResult *r = extract(SRC, CBM_LANG_ST, "t", "Programs.st");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    const CBMDefinition *owner = st_def(r, "P_Owner");
+    const CBMDefinition *tick = st_def(r, "Tick");
+    ASSERT_NOT_NULL(owner);
+    ASSERT_NOT_NULL(tick);
+    ASSERT_NOT_NULL(tick->parent_class);
+    ASSERT_STR_EQ(tick->parent_class, owner->qualified_name);
+    ASSERT_EQ((int)tick->start_line, 14);
+    ASSERT_NOT_NULL(st_def(r, "P_Plain"));
+    ASSERT_NOT_NULL(st_def(r, "P_Last"));
+    cbm_free_result(r);
+    PASS();
+}
+
 /* ── Result compaction (cbm_result_compact) ────────────────────────────── */
 
 static const char *COMPACT_PY_SRC = "import os\n"
@@ -13809,6 +14193,17 @@ SUITE(extraction) {
     RUN_TEST(st_body_call_sources_to_its_block);
     RUN_TEST(st_declared_names_bind_while_types_and_initializers_stay_usages);
     RUN_TEST(st_extends_and_implements_collect_every_base);
+    RUN_TEST(st_normalize_preserves_lines_and_scopes_declaration_rewrites);
+    RUN_TEST(st_normalize_strips_pragma_and_enum_base_before_parsing);
+    RUN_TEST(st_normalize_rewrites_reference_to_and_pou_access_before_parsing);
+    RUN_TEST(st_normalize_strips_hardware_binding_before_parsing);
+    RUN_TEST(st_normalize_strips_persistent_before_parsing);
+    RUN_TEST(st_normalize_rewrites_declaration_initializers_and_and_then_before_parsing);
+    RUN_TEST(st_normalize_strips_type_extends_before_parsing);
+    RUN_TEST(st_declaration_region_stays_inside_its_block);
+    RUN_TEST(st_normalize_rewrites_every_var_section);
+    RUN_TEST(st_lowercase_end_program_becomes_function_block);
+    RUN_TEST(st_program_becomes_function_block_only_for_its_own_members);
 
     cbm_shutdown();
 }

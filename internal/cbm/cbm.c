@@ -25,6 +25,7 @@
 #include "preprocessor.h"
 #include "sql_values.h" // #1735: literal INSERT rows kept out of the SQL parse
 #include "cpp_branch_views.h"
+#include "st_dialect.h" // cbm_st_normalize -- vendor-dialect .st source normalized before parsing
 #include "foundation/compat.h"
 #include "foundation/compat_fs.h"  // cbm_fopen — crash-supervisor per-file marker write
 #include "foundation/hash_table.h" // CBMHashTable — crash-supervisor quarantine set
@@ -4660,6 +4661,37 @@ void cbm_work_arena_give(CBMArena *from) {
     memset(from, 0, sizeof(*from));
 }
 
+/* Real-world .st exports (CODESYS/TwinCAT) carry vendor-dialect constructs the
+ * grammar rejects by design: extraction parses a normalized transient copy, so
+ * every caller — the extract passes and any cache-miss re-extract alike — sees
+ * the same normalized source without a pipeline special case. Points *source
+ * at the copy and returns it (NULL for any other language). A normalization
+ * failure (OOM) keeps the original source rather than losing the file; every
+ * pass is line-preserving, so no line remap is needed either way. */
+static char *st_normalized_source(CBMLanguage language, const char **source, int *source_len) {
+    if (language != CBM_LANG_ST) {
+        return NULL;
+    }
+    int st_len = 0;
+    char *st_buf = cbm_st_normalize(*source, *source_len, &st_len);
+    if (st_buf) {
+        *source = st_buf;
+        *source_len = st_len;
+    }
+    return st_buf;
+}
+
+/* Frees the normalized copy; the result's tree indexes it, so it goes first. */
+static void st_release_source(CBMFileResult *result, char *st_buf) {
+    if (!st_buf) {
+        return;
+    }
+    if (result) {
+        cbm_free_tree(result);
+    }
+    cbm_free(CBM_MEM_CLASS_EXTRACT, st_buf);
+}
+
 /* Public entry. Owns the traversal scratch arena for the whole of one file's
  * extraction: created here, handed to the body as ctx->scratch, destroyed on
  * the way out. The body has seven early returns, so bracketing it in a wrapper
@@ -4684,6 +4716,7 @@ CBMFileResult *cbm_extract_file_ex_with_tests(
     const char *rel_path, int64_t timeout_micros, const char **extra_defines,
     const char **include_paths, const CBMMacroTable *macro_table,
     const CBMReturnTypeTable *return_type_table, const cbm_test_declarations_t *test_declarations) {
+    char *st_buf = st_normalized_source(language, &source, &source_len);
     CBMArena scratch;
     if (tl_scratch_live && tl_scratch_slot) {
         scratch = *tl_scratch_slot;
@@ -4745,6 +4778,7 @@ CBMFileResult *cbm_extract_file_ex_with_tests(
         cbm_arena_destroy(&scratch);
     }
     cbm_test_declarations_degrade(result);
+    st_release_source(result, st_buf);
     return result;
 }
 
